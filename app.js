@@ -1654,6 +1654,8 @@ function openDayScheduleModal(isoDate, readOnly) {
   const canBook = !readOnly && currentUser &&
     [ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR].includes(currentUser.role);
 
+  if (window.innerWidth <= 768) { openDayDrawer(isoDate, canBook); return; }
+
   let modal = document.getElementById("day-schedule-modal");
   if (!modal) {
     modal = document.createElement("div");
@@ -1847,6 +1849,8 @@ function openMeetingModal(isoDate) {
     showToast("Only authorized roles may book meetings.", "warning");
     return;
   }
+
+  if (window.innerWidth <= 768) { openBookingDrawer(isoDate); return; }
 
   const todayISO = getTodayISOManila();
   $("#meeting-form").reset();
@@ -2408,3 +2412,525 @@ document.addEventListener("DOMContentLoaded", () => {
   else if (page === "admin") initAdminPage();
   else if (page === "user") initUserPage();
 });
+// ===========================================================================
+// BOTTOM DRAWER — mobile replacement for modals (≤768px)
+// Completely independent from the .modal system — no inline style conflicts.
+// ===========================================================================
+
+(function () {
+
+  // ── Shared drawer infrastructure ──────────────────────────────────────────
+
+  let _overlay = null;
+  let _activeDrawer = null;
+
+  function _getOverlay() {
+    if (!_overlay) {
+      _overlay = document.createElement("div");
+      _overlay.className = "drawer-overlay";
+      document.body.appendChild(_overlay);
+      _overlay.addEventListener("click", _closeActive);
+    }
+    return _overlay;
+  }
+
+  function _openDrawer(drawer) {
+    const overlay = _getOverlay();
+    if (_activeDrawer && _activeDrawer !== drawer) _destroyDrawer(_activeDrawer);
+    _activeDrawer = drawer;
+    document.body.appendChild(drawer);
+    document.body.style.overflow = "hidden";
+    overlay.classList.add("drawer-visible");
+    // Force reflow so CSS transition fires
+    drawer.offsetHeight;
+    drawer.classList.add("drawer-open");
+  }
+
+  function _closeActive() {
+    if (_activeDrawer) _destroyDrawer(_activeDrawer);
+  }
+
+  function _destroyDrawer(drawer) {
+    drawer.classList.remove("drawer-open");
+    if (_overlay) _overlay.classList.remove("drawer-visible");
+    document.body.style.overflow = "";
+    setTimeout(() => {
+      if (drawer.parentNode) drawer.parentNode.removeChild(drawer);
+    }, 380);
+    _activeDrawer = null;
+  }
+
+  function _makeDrawer(id, titleHTML, subtitleHTML, bodyHTML, footerHTML) {
+    // Remove stale instance
+    const old = document.getElementById(id);
+    if (old) old.parentNode && old.parentNode.removeChild(old);
+
+    const d = document.createElement("div");
+    d.id = id;
+    d.className = "bottom-drawer";
+    d.innerHTML = `
+      <div class="drawer-handle"></div>
+      <div class="drawer-header">
+        <div class="drawer-title-wrap">
+          <div class="drawer-title">${titleHTML}</div>
+          ${subtitleHTML ? `<div class="drawer-subtitle">${subtitleHTML}</div>` : ""}
+        </div>
+        <button class="drawer-close" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="drawer-body">${bodyHTML}</div>
+      <div class="drawer-footer">${footerHTML}</div>`;
+
+    d.querySelector(".drawer-close").addEventListener("click", _closeActive);
+    return d;
+  }
+
+  // ── Day Schedule Drawer ───────────────────────────────────────────────────
+
+  window.openDayDrawer = function (isoDate, canBook) {
+    const d = new Date(isoDate + "T00:00:00");
+    const dateDisplay = d.toLocaleDateString("en-PH", {
+      weekday: "long", year: "numeric", month: "long", day: "numeric"
+    });
+
+    const holidayInfo = getHolidayInfo(isoDate);
+    const dayMeetings = meetings
+      .filter(m => m.date === isoDate)
+      .sort((a, b) => (a.timeStart || "").localeCompare(b.timeStart || ""));
+    const approvedMeetings = dayMeetings.filter(m => m.status === "Approved");
+    const approvedMins = approvedMeetings.reduce(
+      (s, m) => s + (m.durationHours || SLOT_DURATION_HOURS) * 60, 0
+    );
+    const isFullyBooked = approvedMins >= (WORK_END_HOUR - WORK_START_HOUR) * 60;
+
+    // Title
+    const titleHTML = `
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <rect x="3" y="4" width="18" height="18" rx="2"/>
+        <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+        <line x1="3" y1="10" x2="21" y2="10"/>
+      </svg>
+      ${dateDisplay}`;
+
+    // Subtitle (holiday)
+    const subtitleHTML = holidayInfo
+      ? `<span class="holiday-tag">
+           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+             <circle cx="12" cy="12" r="10"/>
+             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+             <line x1="2" y1="12" x2="22" y2="12"/>
+           </svg>
+           PH Holiday: ${holidayInfo.localName}
+         </span>`
+      : "";
+
+    // Body — timeline + meeting list
+    const STATUS_STYLE = {
+      "Approved":               { bg:"#dcfce7", border:"#16a34a", text:"#166534" },
+      "Pending":                { bg:"#fef3c7", border:"#f59e0b", text:"#92400e" },
+      "Cancelled":              { bg:"#f3f4f6", border:"#d1d5db", text:"#9ca3af" },
+      "Rejected":               { bg:"#f3f4f6", border:"#d1d5db", text:"#9ca3af" },
+      "Done":                   { bg:"#dbeafe", border:"#3b82f6", text:"#1e40af" },
+      "Cancellation Requested": { bg:"#fff7ed", border:"#f97316", text:"#c2410c" },
+    };
+
+    let meetingListHtml = "";
+    if (!dayMeetings.length) {
+      meetingListHtml = `
+        <div style="text-align:center;padding:28px 0 16px;color:var(--color-text-muted);font-size:0.86rem">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"
+               style="display:block;margin:0 auto 10px;opacity:.35">
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+          </svg>
+          No meetings scheduled for this day.
+        </div>`;
+    } else {
+      const statusNote = isFullyBooked
+        ? `<div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:10px;padding:10px 14px;font-size:0.82rem;color:#991b1b;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:7px">
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+               <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+             </svg>
+             This day is fully booked — no available slots.
+           </div>`
+        : approvedMeetings.length
+          ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;font-size:0.82rem;color:#92400e;font-weight:500;margin-bottom:12px;display:flex;align-items:center;gap:7px">
+               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                 <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                 <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+               </svg>
+               Some slots are taken — check timeline before booking.
+             </div>`
+          : "";
+
+      meetingListHtml = statusNote +
+        `<div style="font-size:0.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:10px">
+           Meetings (${dayMeetings.length})
+         </div>
+         <div style="display:flex;flex-direction:column;gap:9px">
+           ${dayMeetings.map(m => {
+             const c = STATUS_STYLE[m.status] || STATUS_STYLE["Cancelled"];
+             const timeRange = m.timeStart
+               ? formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS) : "—";
+             return `
+               <div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${c.border};border-radius:10px;padding:12px 14px">
+                 <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+                   <div style="min-width:0">
+                     <div style="font-weight:700;font-size:0.88rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                       ${m.eventName || "Meeting"}
+                     </div>
+                     <div style="font-size:0.77rem;color:${c.text};opacity:.85;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px">
+                       <span style="display:inline-flex;align-items:center;gap:3px">
+                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                           <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                         </svg>${timeRange}
+                       </span>
+                       <span style="display:inline-flex;align-items:center;gap:3px">
+                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                           <path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/>
+                           <path d="M12 7v5l3 3"/>
+                         </svg>${m.durationHours || SLOT_DURATION_HOURS}h
+                       </span>
+                       ${m.venue ? `<span style="display:inline-flex;align-items:center;gap:3px">
+                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                           <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                           <circle cx="12" cy="10" r="3"/>
+                         </svg>${m.venue}</span>` : ""}
+                     </div>
+                     ${m.councilor ? `<div style="font-size:0.73rem;color:${c.text};opacity:.72;margin-top:4px;display:flex;align-items:center;gap:3px">
+                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                         <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                       </svg>${m.councilor}</div>` : ""}
+                     ${m.committee ? `<div style="font-size:0.73rem;color:${c.text};opacity:.72;display:flex;align-items:center;gap:3px">
+                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                         <rect x="2" y="7" width="20" height="14" rx="1"/>
+                         <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+                       </svg>${m.committee}</div>` : ""}
+                     ${m.adminNote ? `<div style="font-size:0.71rem;color:${c.text};opacity:.65;margin-top:5px;font-style:italic;display:flex;align-items:center;gap:3px">
+                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                         <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                       </svg>${m.adminNote}</div>` : ""}
+                   </div>
+                   <span style="flex-shrink:0;font-size:0.69rem;font-weight:700;background:white;color:${c.text};border:1px solid ${c.border};padding:3px 9px;border-radius:999px;white-space:nowrap">
+                     ${m.status}
+                   </span>
+                 </div>
+               </div>`;
+           }).join("")}
+         </div>`;
+    }
+
+    const bodyHTML = buildTimelineHTML(isoDate, dayMeetings) + meetingListHtml;
+
+    // Footer
+    let footerHTML = "";
+    if (canBook && !isFullyBooked && !holidayInfo) {
+      footerHTML = `
+        <button id="drawer-day-close" class="btn btn-ghost">Close</button>
+        <button id="drawer-day-book" class="btn btn-primary">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          Book a Meeting
+        </button>`;
+    } else {
+      const reason = holidayInfo
+        ? "Philippine Holiday — no bookings allowed"
+        : isFullyBooked ? "No available time slots" : "";
+      footerHTML = `
+        ${reason ? `<span style="font-size:0.78rem;color:var(--color-text-muted);flex:1;display:flex;align-items:center">${reason}</span>` : ""}
+        <button id="drawer-day-close" class="btn btn-ghost" style="min-width:100px">Close</button>`;
+    }
+
+    const drawer = _makeDrawer("drawer-day", titleHTML, subtitleHTML, bodyHTML, footerHTML);
+    _openDrawer(drawer);
+
+    requestAnimationFrame(() => {
+      document.getElementById("drawer-day-close")
+        ?.addEventListener("click", _closeActive);
+      document.getElementById("drawer-day-book")
+        ?.addEventListener("click", () => {
+          _closeActive();
+          // Small delay so first drawer fully closes before second opens
+          setTimeout(() => openBookingDrawer(isoDate), 120);
+        });
+    });
+  };
+
+  // ── Booking Drawer ────────────────────────────────────────────────────────
+
+  window.openBookingDrawer = function (isoDate) {
+    const currentUser = getCurrentUser();
+    if (!currentUser ||
+        ![ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR]
+          .includes(currentUser.role)) {
+      showToast("Only authorized roles may book meetings.", "warning");
+      return;
+    }
+
+    const todayISO = getTodayISOManila();
+    if (isoDate && isoDate < todayISO) {
+      showToast("Cannot schedule meetings on past dates.", "error");
+      return;
+    }
+    const activeDate = isoDate || todayISO;
+
+    const titleHTML = `
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <rect x="3" y="4" width="18" height="18" rx="2"/>
+        <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+        <line x1="3" y1="10" x2="21" y2="10"/>
+      </svg>
+      Schedule Meeting`;
+
+    const bodyHTML = `
+      <form id="drawer-booking-form" class="section-stack" onsubmit="return false">
+        <div>
+          <label class="field-label" for="db-event">Event Name *</label>
+          <input id="db-event" class="field" required placeholder="e.g. Committee Hearing" autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="db-committee">Committee *</label>
+          <input id="db-committee" class="field" required placeholder="e.g. Ways and Means" autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="db-councilor">Councilor *</label>
+          <input id="db-councilor" class="field" required autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="db-researcher">Researcher *</label>
+          <input id="db-researcher" class="field" required autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="db-date">Date *</label>
+          <input id="db-date" type="date" class="field" required
+                 min="${todayISO}" value="${activeDate}" />
+        </div>
+        <div>
+          <label class="field-label" for="db-time">Start Time *</label>
+          <select id="db-time" class="field" required></select>
+          <div id="db-time-hint" class="helper-text" style="margin-top:4px;font-size:0.78rem"></div>
+          <div class="calendar-lunch-block">Office hours: 8:00 AM – 5:00 PM</div>
+          <div id="db-end-preview" class="helper-text" style="font-size:0.78rem"></div>
+        </div>
+        <div>
+          <label class="field-label" for="db-duration">Duration *</label>
+          <select id="db-duration" class="field" required></select>
+          <div id="db-duration-hint" class="helper-text" style="font-size:0.78rem"></div>
+        </div>
+        <div>
+          <label class="field-label" for="db-type">Type of Meeting *</label>
+          <select id="db-type" class="field">
+            <option value="Regular Session">Regular Session</option>
+            <option value="Special Session">Special Session</option>
+            <option value="Others">Others (Please Specify)</option>
+          </select>
+          <input id="db-type-other" class="field" placeholder="Please specify..."
+                 style="display:none;margin-top:8px" />
+        </div>
+        <div>
+          <label class="field-label" for="db-venue">Venue *</label>
+          <select id="db-venue" class="field">
+            <option value="SB Hall">SB Hall</option>
+            <option value="Old SB Hall">Old SB Hall</option>
+            <option value="ABC Hall">ABC Hall</option>
+            <option value="Others">Others (Please Specify)</option>
+          </select>
+          <input id="db-venue-other" class="field" placeholder="Please specify..."
+                 style="display:none;margin-top:8px" />
+        </div>
+        <div>
+          <label class="field-label" for="db-notes">Notes</label>
+          <textarea id="db-notes" class="field" rows="3" style="resize:vertical"
+                    placeholder="Optional additional information…"></textarea>
+        </div>
+        <div id="db-form-msg" class="helper-text" style="color:var(--color-danger);font-size:0.82rem"></div>
+      </form>`;
+
+    const footerHTML = `
+      <button id="db-cancel" class="btn btn-ghost">Cancel</button>
+      <button id="db-submit" class="btn btn-primary">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z"/>
+          <polyline points="17 21 17 13 7 13 7 21"/>
+        </svg>
+        Save Schedule
+      </button>`;
+
+    const drawer = _makeDrawer("drawer-booking", titleHTML, "", bodyHTML, footerHTML);
+    _openDrawer(drawer);
+
+    requestAnimationFrame(() => {
+      // Prefill role-based fields
+      if (currentUser.role === ROLES.COUNCILOR) {
+        const el = document.getElementById("db-councilor");
+        if (el) { el.value = currentUser.name; el.readOnly = true; }
+      }
+      if (currentUser.role === ROLES.RESEARCHER) {
+        const el = document.getElementById("db-researcher");
+        if (el) { el.value = currentUser.name; el.readOnly = true; }
+      }
+
+      // Populate dropdowns
+      _dbPopulateTime(activeDate);
+      _dbPopulateDuration();
+      _dbUpdateEndPreview();
+
+      // Event listeners
+      document.getElementById("db-cancel")?.addEventListener("click", _closeActive);
+      document.getElementById("db-submit")?.addEventListener("click", _dbHandleSubmit);
+
+      document.getElementById("db-date")?.addEventListener("change", function () {
+        _dbPopulateTime(this.value);
+        _dbUpdateEndPreview();
+      });
+      document.getElementById("db-time")?.addEventListener("change", _dbUpdateEndPreview);
+      document.getElementById("db-duration")?.addEventListener("change", _dbUpdateEndPreview);
+
+      document.getElementById("db-type")?.addEventListener("change", function () {
+        document.getElementById("db-type-other").style.display =
+          this.value === "Others" ? "" : "none";
+      });
+      document.getElementById("db-venue")?.addEventListener("change", function () {
+        document.getElementById("db-venue-other").style.display =
+          this.value === "Others" ? "" : "none";
+      });
+    });
+  };
+
+  // ── Booking drawer helpers ─────────────────────────────────────────────────
+
+  function _dbPopulateTime(isoDate) {
+    const sel = document.getElementById("db-time");
+    const hint = document.getElementById("db-time-hint");
+    if (!sel) return;
+
+    const approved = meetings.filter(
+      m => m.date === isoDate && m.status === "Approved"
+    );
+    sel.innerHTML = "";
+    let count = 0;
+
+    for (let h = WORK_START_HOUR; h < WORK_END_HOUR; h++) {
+      const timeStr = `${String(h).padStart(2, "0")}:00`;
+      const blocked = approved.some(m => {
+        const s = minutesFromTimeStr(m.timeStart);
+        const e = s + (m.durationHours || SLOT_DURATION_HOURS) * 60;
+        return h * 60 >= s && h * 60 < e;
+      });
+      if (!blocked) {
+        const label = h < 12
+          ? `${h}:00 AM`
+          : h === 12 ? "12:00 PM"
+          : `${h - 12}:00 PM`;
+        const opt = document.createElement("option");
+        opt.value = timeStr;
+        opt.textContent = label;
+        sel.appendChild(opt);
+        count++;
+      }
+    }
+
+    if (hint) {
+      if (count === 0) {
+        hint.style.color = "var(--color-danger)";
+        hint.textContent = "✗ No time slots available for this date";
+      } else if (approved.length === 0) {
+        hint.style.color = "var(--color-success)";
+        hint.textContent = "✓ All time slots available for this date";
+      } else {
+        hint.style.color = "var(--color-warning)";
+        hint.textContent = "⚠ Some slots are taken";
+      }
+    }
+  }
+
+  function _dbPopulateDuration() {
+    const sel = document.getElementById("db-duration");
+    if (!sel) return;
+    sel.innerHTML = "";
+    for (let h = 1; h <= 8; h++) {
+      const opt = document.createElement("option");
+      opt.value = h;
+      opt.textContent = `${h} hour${h > 1 ? "s" : ""}`;
+      if (h === (SLOT_DURATION_HOURS || 3)) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  function _dbUpdateEndPreview() {
+    const timeEl = document.getElementById("db-time");
+    const durEl  = document.getElementById("db-duration");
+    const prev   = document.getElementById("db-end-preview");
+    if (!timeEl || !durEl || !prev) return;
+    const startMins = minutesFromTimeStr(timeEl.value);
+    const dur = parseInt(durEl.value) || SLOT_DURATION_HOURS;
+    const endMins = startMins + dur * 60;
+    const eh = Math.floor(endMins / 60);
+    const em = endMins % 60;
+    const label = eh < 12
+      ? `${eh}:${String(em).padStart(2, "0")} AM`
+      : eh === 12 ? `12:${String(em).padStart(2, "0")} PM`
+      : `${eh - 12}:${String(em).padStart(2, "0")} PM`;
+    prev.style.color = endMins > WORK_END_HOUR * 60
+      ? "var(--color-danger)" : "var(--color-text-muted)";
+    prev.textContent = endMins > WORK_END_HOUR * 60
+      ? `⚠ End time ${label} exceeds office hours`
+      : `End Time: ${label}`;
+  }
+
+  function _dbHandleSubmit() {
+    const msg = document.getElementById("db-form-msg");
+    const currentUser = getCurrentUser();
+    if (!currentUser) return;
+
+    const get = id => document.getElementById(id)?.value.trim();
+
+    const eventName    = get("db-event");
+    const committee    = get("db-committee");
+    const councilor    = get("db-councilor");
+    const researcher   = get("db-researcher");
+    const date         = get("db-date");
+    const timeStart    = get("db-time");
+    const durationHours = parseInt(get("db-duration"));
+    const typeVal      = get("db-type");
+    const meetingType  = typeVal === "Others" ? get("db-type-other") : typeVal;
+    const venueVal     = get("db-venue");
+    const venue        = venueVal === "Others" ? get("db-venue-other") : venueVal;
+    const notes        = get("db-notes");
+
+    if (!eventName || !committee || !councilor || !researcher || !date || !timeStart) {
+      if (msg) msg.textContent = "Please fill in all required fields.";
+      return;
+    }
+    const todayISO = getTodayISOManila();
+    if (date < todayISO) {
+      if (msg) msg.textContent = "Cannot schedule meetings on past dates.";
+      return;
+    }
+    if (msg) msg.textContent = "";
+
+    const btn = document.getElementById("db-submit");
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+
+    api.addMeeting({
+      eventName, committee, councilor, researcher,
+      date, timeStart, durationHours,
+      meetingType, venue, notes,
+      status: "Pending",
+      createdBy: currentUser.id || currentUser.username,
+      createdAt: new Date().toISOString(),
+    }).then(() => {
+      showToast("Meeting request submitted! Awaiting admin approval.", "success");
+      _closeActive();
+    }).catch(() => {
+      if (msg) msg.textContent = "Failed to save. Please try again.";
+      if (btn) { btn.disabled = false; btn.textContent = "Save Schedule"; }
+    });
+  }
+
+})();

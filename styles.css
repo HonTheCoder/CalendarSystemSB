@@ -730,8 +730,193 @@ tbody tr:hover { background: var(--color-primary-soft); }
   background: linear-gradient(90deg, var(--brand-gold-soft), transparent 70%);
 }
 .modal-title  { font-weight: 800; font-size: 0.95rem; color: var(--color-text); font-family: var(--font-display); }
-.modal-body   { padding: 20px; overflow-y: auto; flex: 1; }
+.modal-body   { padding: 20px; overflow-y: auto; flex: 1 1 0; min-height: 0; }
 .modal-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--color-border); background: var(--color-surface-2); }
+
+/* --------------------------------------------------------------------------
+   16b. BOTTOM DRAWER — mobile only, completely separate from .modal system
+   -------------------------------------------------------------------------- */
+
+/* Overlay backdrop */
+.drawer-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 15, 34, 0.65);
+  z-index: 700;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.drawer-overlay.drawer-visible {
+  display: block;
+  opacity: 1;
+}
+
+/* The drawer itself */
+.bottom-drawer {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 701;
+  background: var(--color-surface);
+  border-radius: 22px 22px 0 0;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.28);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  max-height: 88dvh;
+  transform: translateY(100%);
+  transition: transform 0.38s cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+}
+.bottom-drawer.drawer-open {
+  transform: translateY(0);
+}
+
+/* Drag handle */
+.drawer-handle {
+  width: 40px;
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 99px;
+  margin: 10px auto 0;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .drawer-handle {
+  background: var(--color-border);
+}
+
+/* Header */
+.drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 18px 10px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  background: linear-gradient(90deg, var(--brand-gold-soft), transparent 70%);
+  border-radius: 22px 22px 0 0;
+}
+[data-theme="dark"] .drawer-header {
+  background: linear-gradient(90deg, rgba(245,163,26,0.07), transparent 70%);
+}
+.drawer-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.drawer-title {
+  font-size: 1rem;
+  font-weight: 800;
+  font-family: var(--font-display);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.2;
+}
+.drawer-subtitle {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+.drawer-subtitle .holiday-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 6px;
+  padding: 2px 9px;
+  font-size: 0.73rem;
+  font-weight: 600;
+}
+[data-theme="dark"] .drawer-subtitle .holiday-tag {
+  background: rgba(245,163,26,0.15);
+  color: #FCD34D;
+}
+.drawer-close {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.drawer-close:hover {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Scrollable body */
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 18px;
+  overscroll-behavior: contain;
+}
+
+/* Footer */
+.drawer-footer {
+  display: flex;
+  gap: 10px;
+  padding: 12px 18px;
+  padding-bottom: max(14px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  flex-shrink: 0;
+}
+.drawer-footer .btn {
+  flex: 1;
+  justify-content: center;
+  min-height: 46px;
+  font-size: 0.92rem;
+}
+
+/* Form fields inside drawer */
+.drawer-body .field,
+.drawer-body select.field {
+  min-height: 46px;
+  font-size: 1rem;
+  padding: 10px 13px;
+}
+.drawer-body textarea.field {
+  font-size: 1rem;
+  min-height: 80px;
+}
+.drawer-body .form-grid-2 {
+  grid-template-columns: 1fr !important;
+  gap: 12px;
+}
+.drawer-body .section-stack > * + * {
+  margin-top: 14px;
+}
+.drawer-body .field-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-bottom: 5px;
+  display: block;
+}
+
+/* On desktop — drawer never shows, modals work normally */
+@media (min-width: 769px) {
+  .drawer-overlay,
+  .bottom-drawer { display: none !important; }
+}
+
+/* On mobile — hide original modals, use drawer instead */
+@media (max-width: 768px) {
+  #day-schedule-modal,
+  #meeting-modal {
+    display: none !important;
+  }
+}
 
 /* --------------------------------------------------------------------------
    17. TOAST
@@ -1261,24 +1446,22 @@ body[data-page="login"] {
 @media (max-width: 768px) {
   .sidebar        { display: none; }
   .bottom-nav     { display: flex; }
-  .main-scroll    { padding: 14px 12px 80px; }
-  .topbar         { padding: 0 12px; }
+  .main-scroll    { padding: 16px 16px 80px; }
+  .topbar         { padding: 0 16px; }
   .card-header    { flex-direction: column; gap: 10px; }
   .stats-grid     { grid-template-columns: 1fr 1fr; }
   .user-form-grid { grid-template-columns: 1fr; }
-  .notif-panel    { width: calc(100vw - 24px); right: -60px; }
+  .notif-panel    { width: 300px; right: -60px; }
   .auth-card-inner{ padding: 28px 24px 24px; }
-  .modal-backdrop { padding: 14px; }
 }
 
 @media (max-width: 480px) {
   .dash-stat-row         { grid-template-columns: 1fr 1fr; }
   .auth-header           { flex-direction: column; text-align: center; align-items: center; }
   .auth-logo-wrapper img { width: 70px; height: 70px; }
-  .calendar-cell         { min-height: 46px; }
+  .calendar-cell         { min-height: 52px; }
   .auth-card-inner       { padding: 22px 18px 20px; }
   .auth-right-inner      { padding: 26px 20px 20px; }
   .auth-right-strip      { padding: 10px 20px; }
   .auth-welcome-title    { font-size: 1.25rem; }
-  .modal-backdrop        { padding: 12px; }
 }
