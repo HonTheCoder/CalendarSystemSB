@@ -25,6 +25,19 @@ const WORK_START_HOUR = 8;
 const WORK_END_HOUR = 17;
 let SLOT_DURATION_HOURS = 3;
 
+// ---------------------------------------------------------------------------
+// XSS Prevention — always use h() when rendering user-supplied data into HTML
+// ---------------------------------------------------------------------------
+function h(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
 // Session timeout: 30 minutes of inactivity
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -487,7 +500,9 @@ function meetingStatusBadge(status) {
   return `<span class="${base} ${map[status] || "badge-info"}">${status === "Cancellation Requested" ? "Cancel Requested" : status}</span>`;
 }
 
-function statusColorForCalendar(status) {
+function statusColorForCalendar(status, isAdminCreated) {
+  if (isAdminCreated && status === "Approved") return "calendar-badge calendar-badge-admin";
+  if (isAdminCreated && status === "Pending")  return "calendar-badge calendar-badge-admin-pending";
   const map = {
     "Approved": "calendar-badge calendar-badge-approved",
     "Pending": "calendar-badge calendar-badge-pending",
@@ -864,8 +879,8 @@ function renderUsersTable() {
   tbody.innerHTML = paginated.map(u => {
     const isAdmin = u.role === ROLES.ADMIN;
     return `<tr>
-      <td>${u.username}</td>
-      <td>${u.name || ""}</td>
+      <td>${h(u.username)}</td>
+      <td>${h(u.name || "")}</td>
       <td><span class="${roleChipClass(u.role)}">${u.role}</span></td>
       <td>
         <button class="btn btn-sm btn-ghost" data-action="change-password" data-user-id="${u.id}">Change Password</button>
@@ -935,18 +950,32 @@ function handleUserTableClick(e) {
   if (action === "remove-user") {
     openConfirmModal(
       "Remove User Account",
-      `Are you sure you want to remove <strong>${user.name}</strong>? This cannot be undone.`,
+      `Are you sure you want to remove <strong>${h(user.name)}</strong>? This cannot be undone. Their pending/approved meetings will be cancelled.`,
       () => {
+        // Cancel all active meetings belonging to this user before deleting
+        const userMeetings = meetings.filter(m =>
+          (m.createdBy === user.id || m.createdBy === user.username) &&
+          ["Pending", "Approved", "Cancellation Requested"].includes(m.status)
+        );
+        userMeetings.forEach(m => {
+          m.status = "Cancelled";
+          m.adminNote = `Account removed — ${user.name}`;
+          if (window.api && window.api.updateMeetingStatus) {
+            window.api.updateMeetingStatus(m.id, "Cancelled", m.adminNote).then(() => {});
+          }
+        });
+        if (userMeetings.length) persistMeetings();
+
         if (window.api && window.api.deleteUser) {
-          window.api.deleteUser(userId).then(async () => {
+          window.api.deleteUser(user.id || userId).then(async () => {
             users = await window.api.getUsers();
-            renderUsersTable(); updateStatistics();
-            showToast("User account removed.", "success");
+            renderUsersTable(); renderAdminMeetingsTable(); renderCalendar(); updateStatistics();
+            showToast(`User removed. ${userMeetings.length ? userMeetings.length + " meeting(s) cancelled." : ""}`, "success");
           });
         } else {
           users = users.filter(u => u.id !== userId);
-          persistUsers(); renderUsersTable(); updateStatistics();
-          showToast("User account removed.", "success");
+          persistUsers(); renderUsersTable(); renderAdminMeetingsTable(); renderCalendar(); updateStatistics();
+          showToast(`User removed. ${userMeetings.length ? userMeetings.length + " meeting(s) cancelled." : ""}`, "success");
         }
       }
     );
@@ -966,28 +995,42 @@ function openConfirmModal(title, bodyHtml, onConfirm, onCancel) {
     modal.id = "confirm-modal";
     modal.className = "modal-backdrop";
     modal.innerHTML = `
-      <div class="modal" style="max-width:420px">
+      <div class="modal" style="max-width:440px">
         <div class="modal-header">
           <div class="modal-title" id="confirm-modal-title"></div>
           <button id="confirm-modal-close" class="btn btn-ghost btn-sm">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <div class="modal-body"><div id="confirm-modal-body" style="font-size:0.9rem;color:#374151;line-height:1.6"></div></div>
+        <div class="modal-body" id="confirm-modal-body-wrap"><div id="confirm-modal-body" class="confirm-modal-body-inner"></div></div>
         <div class="modal-footer">
           <button id="confirm-modal-cancel" class="btn btn-ghost btn-sm">Cancel</button>
-          <button id="confirm-modal-ok" class="btn btn-danger btn-sm">Confirm</button>
+          <button id="confirm-modal-ok" class="btn btn-primary btn-sm">Confirm</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
   }
+
   document.getElementById("confirm-modal-title").textContent = title;
   document.getElementById("confirm-modal-body").innerHTML = bodyHtml;
+
+  // Reset scroll to top every time modal opens
+  const bodyWrap = document.getElementById("confirm-modal-body-wrap");
+  if (bodyWrap) bodyWrap.scrollTop = 0;
+
+  // Re-trigger animation by removing and re-adding the class
+  const modalInner = modal.querySelector(".modal");
+  if (modalInner) { modalInner.style.animation = "none"; requestAnimationFrame(() => { modalInner.style.animation = ""; }); }
+
   modal.classList.add("modal-open");
+
   const close = (cancelled) => {
     modal.classList.remove("modal-open");
     if (cancelled && typeof onCancel === "function") onCancel();
   };
+
+  // Backdrop click — defined after close so no ReferenceError
+  modal.onclick = (e) => { if (e.target === modal) close(true); };
   document.getElementById("confirm-modal-close").onclick = () => close(true);
   document.getElementById("confirm-modal-cancel").onclick = () => close(true);
   document.getElementById("confirm-modal-ok").onclick = () => { close(false); onConfirm(); };
@@ -1064,7 +1107,7 @@ function renderMyMeetingsTable(currentUser) {
     const q = myMeetingsSearch.toLowerCase();
     mine = mine.filter(m =>
       (m.eventName || "").toLowerCase().includes(q) ||
-      (m.type || "").toLowerCase().includes(q) ||
+      (m.type || m.meetingType || "").toLowerCase().includes(q) ||
       (m.status || "").toLowerCase().includes(q) ||
       (m.venue || "").toLowerCase().includes(q)
     );
@@ -1083,13 +1126,13 @@ function renderMyMeetingsTable(currentUser) {
 
   tbody.innerHTML = paginated.map(m => {
     const canRequestCancel = currentUser.role !== ROLES.ADMIN && ["Pending", "Approved"].includes(m.status);
-    const noteTitle = m.adminNote ? ` title="${String(m.adminNote).replace(/"/g, "&quot;")}"` : "";
-    const noteHint = m.adminNote ? `<div style="font-size:0.72rem;color:#6b7280;margin-top:3px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${String(m.adminNote).replace(/"/g, "&quot;")}">Note: ${m.adminNote}</div>` : "";
+    const noteTitle = m.adminNote ? ` title="${h(m.adminNote)}"` : "";
+    const noteHint = m.adminNote ? `<div style="font-size:0.72rem;color:#6b7280;margin-top:3px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h(m.adminNote)}">Note: ${h(m.adminNote)}</div>` : "";
     return `<tr>
-      <td>${m.eventName}</td>
+      <td>${h(m.eventName)}</td>
       <td>${formatDateDisplay(m.date)}</td>
       <td>${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)}</td>
-      <td>${m.type}</td>
+      <td>${m.type || m.meetingType || "—"}</td>
       <td${noteTitle}>${meetingStatusBadge(m.status)}${noteHint}</td>
       <td>
         ${canRequestCancel
@@ -1109,7 +1152,7 @@ function renderAdminMeetingsTable() {
   const filterType = $("#filter-type-admin")?.value || "all";
   const filterStatus = $("#filter-status-admin")?.value || "all";
   let list = [...meetings];
-  if (filterType !== "all") list = list.filter(m => m.type === filterType);
+  if (filterType !== "all") list = list.filter(m => (m.type || m.meetingType) === filterType);
   if (filterStatus !== "all") list = list.filter(m => m.status === filterStatus);
   if (adminMeetingsSearch) {
     const q = adminMeetingsSearch.toLowerCase();
@@ -1134,10 +1177,17 @@ function renderAdminMeetingsTable() {
 
   tbody.innerHTML = paginated.map(m => {
     const isCancelRequest = m.status === "Cancellation Requested";
+    const isAdminCreated = m.createdByRole === ROLES.ADMIN;
     const printBtn = m.status === "Approved"
       ? `<button class="btn btn-sm btn-ghost" data-action="print" data-meeting-id="${m.id}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           PDF</button>` : "";
+
+    // Admin-created meetings: show "Referred" badge instead of Approve button
+    const referredBadge = `<span style="font-size:0.72rem;color:#1e40af;font-weight:600;display:inline-flex;align-items:center;gap:4px;background:#dbeafe;border:1px solid #93c5fd;border-radius:6px;padding:3px 8px;">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      Referred
+    </span>`;
 
     // Fix 15: When cancellation is requested, show a clear prominent action instead of generic buttons
     const actionButtons = isCancelRequest
@@ -1154,12 +1204,12 @@ function renderAdminMeetingsTable() {
           </button>
         </div>`
       : `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
-          <button class="action-btn action-btn-approve" data-action="status" data-status="Approved" data-meeting-id="${m.id}">
+          ${isAdminCreated && m.status === "Pending" ? referredBadge : !isAdminCreated ? `<button class="action-btn action-btn-approve" data-action="status" data-status="Approved" data-meeting-id="${m.id}">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Approve
-          </button>
-          <button class="action-btn action-btn-reject" data-action="status" data-status="Rejected" data-meeting-id="${m.id}">
+          </button>` : ""}
+          ${!isAdminCreated ? `<button class="action-btn action-btn-reject" data-action="status" data-status="Rejected" data-meeting-id="${m.id}">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Reject
-          </button>
+          </button>` : ""}
           <button class="action-btn action-btn-cancel" data-action="status" data-status="Cancelled" data-meeting-id="${m.id}">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>Cancel
           </button>
@@ -1169,12 +1219,12 @@ function renderAdminMeetingsTable() {
           ${printBtn}
         </div>`;
     return `<tr${isCancelRequest ? ' style="background:rgba(249,115,22,0.04)"' : ''}>
-      <td>${m.eventName}</td>
+      <td>${h(m.eventName)}</td>
       <td>${formatDateDisplay(m.date)}</td>
       <td>${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)}</td>
-      <td>${m.type}</td>
+      <td>${h(m.type || m.meetingType || "—")}</td>
       <td>${meetingStatusBadge(m.status)}</td>
-      <td>${m.createdBy}</td>
+      <td>${h(m.createdBy)}</td>
       <td>${actionButtons}</td>
     </tr>`;
   }).join("");
@@ -1278,10 +1328,10 @@ function openNoteModal(title, prompt, required, onSubmit, onCancel) {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <div class="modal-body section-stack">
-          <div id="note-modal-prompt" style="font-size:0.85rem;color:#374151"></div>
+        <div class="modal-body section-stack" id="note-modal-body-wrap">
+          <div id="note-modal-prompt" class="confirm-modal-body-inner" style="font-size:0.88rem"></div>
           <textarea id="note-modal-input" class="field" rows="3" style="resize:vertical"></textarea>
-          <div id="note-modal-error" style="color:#dc2626;font-size:0.8rem"></div>
+          <div id="note-modal-error" style="color:#dc2626;font-size:0.8rem;min-height:1.2em"></div>
         </div>
         <div class="modal-footer">
           <button id="note-modal-cancel" class="btn btn-ghost btn-sm">Cancel</button>
@@ -1290,10 +1340,20 @@ function openNoteModal(title, prompt, required, onSubmit, onCancel) {
       </div>`;
     document.body.appendChild(modal);
   }
+
   document.getElementById("note-modal-title").textContent = title;
   document.getElementById("note-modal-prompt").textContent = prompt;
   document.getElementById("note-modal-input").value = "";
   document.getElementById("note-modal-error").textContent = "";
+
+  // Reset scroll to top every time
+  const bodyWrap = document.getElementById("note-modal-body-wrap");
+  if (bodyWrap) bodyWrap.scrollTop = 0;
+
+  // Re-trigger animation
+  const modalInner = modal.querySelector(".modal");
+  if (modalInner) { modalInner.style.animation = "none"; requestAnimationFrame(() => { modalInner.style.animation = ""; }); }
+
   modal.classList.add("modal-open");
 
   const close = (cancelled) => {
@@ -1301,6 +1361,7 @@ function openNoteModal(title, prompt, required, onSubmit, onCancel) {
     if (cancelled && typeof onCancel === "function") onCancel();
   };
 
+  modal.onclick = (e) => { if (e.target === modal) close(true); };
   document.getElementById("note-modal-close").onclick = () => close(true);
   document.getElementById("note-modal-cancel").onclick = () => close(true);
   document.getElementById("note-modal-submit").onclick = () => {
@@ -1403,7 +1464,7 @@ function generateMeetingPdf(mtg) {
       `Councilor: ${mtg.councilor || ""}`, `Researcher: ${mtg.researcher || ""}`,
       `Date: ${formatDateDisplay(mtg.date)}`,
       `Time: ${formatTimeRange(mtg.timeStart, mtg.durationHours || SLOT_DURATION_HOURS)}`,
-      `Type: ${mtg.type}`, `Venue: ${mtg.venue || ""}`,
+      `Type: ${mtg.type || mtg.meetingType || "—"}`, `Venue: ${mtg.venue || ""}`,
       `Requested By: ${mtg.createdBy}`, `Status: ${mtg.status}`,
       mtg.adminNote ? `Admin Note: ${mtg.adminNote}` : "",
     ].filter(Boolean);
@@ -1436,7 +1497,7 @@ function handleMyMeetingsClick(e) {
 
     openConfirmModal(
       "Request Cancellation",
-      `Request cancellation for <strong>${mtg.eventName}</strong> on ${formatDateDisplay(mtg.date)}? The admin will review and confirm.`,
+      `Request cancellation for <strong>${h(mtg.eventName)}</strong> on ${formatDateDisplay(mtg.date)}? The admin will review and confirm.`,
       () => {
         mtg.status = "Cancellation Requested";
         persistMeetings();
@@ -1450,7 +1511,7 @@ function handleMyMeetingsClick(e) {
         users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
           addNotification(
             admin.id || admin.username,
-            `<strong>${currentUser.name}</strong> has requested cancellation of <strong>"${mtg.eventName}"</strong> scheduled on ${formatDateDisplay(mtg.date)}. Please review and take action.`,
+            `<strong>${h(currentUser.name)}</strong> has requested cancellation of <strong>"${h(mtg.eventName)}"</strong> scheduled on ${formatDateDisplay(mtg.date)}. Please review and take action.`,
             "warning",
             "meeting-logs"
           );
@@ -1459,7 +1520,7 @@ function handleMyMeetingsClick(e) {
         // Confirm back to the requesting user
         addNotification(
           currentUser.id || currentUser.username,
-          `Your cancellation request for <strong>"${mtg.eventName}"</strong> on ${formatDateDisplay(mtg.date)} has been submitted and is pending admin review.`,
+          `Your cancellation request for <strong>"${h(mtg.eventName)}"</strong> on ${formatDateDisplay(mtg.date)} has been submitted and is pending admin review.`,
           "info",
           "my-meetings"
         );
@@ -1581,11 +1642,12 @@ function renderCalendar() {
 
     const MAX_BADGES = 2;
     activeMeetings.slice(0, MAX_BADGES).forEach(m => {
+      const isAdminCreated = m.createdByRole === ROLES.ADMIN;
       const badge = document.createElement("div");
-      badge.className = statusColorForCalendar(m.status);
+      badge.className = statusColorForCalendar(m.status, isAdminCreated);
       const timeLabel = m.timeStart ? `${formatTime12h(minutesFromTimeStr(m.timeStart))} ` : "";
       badge.textContent = timeLabel + (m.eventName || "Meeting");
-      badge.title = `${m.eventName} — ${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)} [${m.status}]`;
+      badge.title = `${h(m.eventName)} — ${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)} [${m.status}]${isAdminCreated ? " · Admin scheduled" : ""}`;
       cell.appendChild(badge);
     });
 
@@ -1605,6 +1667,41 @@ function renderCalendar() {
       block.textContent = "Archived";
       block.title = "Archived — read-only";
       cell.appendChild(block);
+    }
+
+    // ── Mobile dot indicators (visible only via CSS on small screens) ──
+    if (activeMeetings.length || dayHistory.length) {
+      const dotsRow = document.createElement("div");
+      dotsRow.className = "calendar-cell-dots";
+
+      const isFullBooked = dayMeetings
+        .filter(m => m.status === "Approved")
+        .reduce((s, m) => s + (m.durationHours || SLOT_DURATION_HOURS) * 60, 0) >= (WORK_END_HOUR - WORK_START_HOUR) * 60;
+
+      if (isFullBooked && isWorkday && !isHoliday) {
+        const dot = document.createElement("div");
+        dot.className = "calendar-dot calendar-dot-full";
+        dotsRow.appendChild(dot);
+      } else {
+        // One dot per unique status (max 3)
+        const statusMap = { "Approved": "approved", "Pending": "pending", "Cancelled": "cancelled", "Rejected": "cancelled" };
+        const seen = new Set();
+        activeMeetings.slice(0, 3).forEach(m => {
+          const cls = statusMap[m.status] || "other";
+          if (!seen.has(cls)) {
+            seen.add(cls);
+            const dot = document.createElement("div");
+            dot.className = `calendar-dot calendar-dot-${cls}`;
+            dotsRow.appendChild(dot);
+          }
+        });
+        if (dayHistory.length && activeMeetings.length === 0) {
+          const dot = document.createElement("div");
+          dot.className = "calendar-dot calendar-dot-other";
+          dotsRow.appendChild(dot);
+        }
+      }
+      cell.appendChild(dotsRow);
     }
 
     // ── Fully booked indicator ──
@@ -1662,8 +1759,8 @@ function openDayScheduleModal(isoDate, readOnly) {
     modal.id = "day-schedule-modal";
     modal.className = "modal-backdrop";
     modal.innerHTML = `
-      <div class="modal" style="max-width:520px">
-        <div class="modal-header" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <div class="modal" style="max-width:600px">
+        <div class="modal-header" style="flex-direction:column;align-items:flex-start;gap:4px;flex-shrink:0">
           <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
             <div class="modal-title" id="day-modal-title"></div>
             <button id="day-modal-close" class="btn btn-ghost btn-sm">
@@ -1672,8 +1769,8 @@ function openDayScheduleModal(isoDate, readOnly) {
           </div>
           <div id="day-modal-subtitle" style="font-size:0.78rem;margin-top:2px"></div>
         </div>
-        <div class="modal-body" id="day-schedule-body" style="padding:16px 20px;max-height:65vh;overflow-y:auto"></div>
-        <div class="modal-footer" id="day-modal-footer"></div>
+        <div id="day-schedule-body" style="flex:1;min-height:0;overflow-y:auto;padding:16px 20px"></div>
+        <div class="modal-footer" id="day-modal-footer" style="flex-shrink:0"></div>
       </div>`;
     document.body.appendChild(modal);
     document.getElementById("day-modal-close").addEventListener("click", () => modal.classList.remove("modal-open"));
@@ -1701,8 +1798,6 @@ function openDayScheduleModal(isoDate, readOnly) {
   const isFullyBooked = approvedMins >= workMins;
 
   // ── Time slot visual timeline ──
-  const body = document.getElementById("day-schedule-body");
-
   // Build timeline
   const timelineHtml = buildTimelineHTML(isoDate, dayMeetings);
 
@@ -1734,18 +1829,22 @@ function openDayScheduleModal(isoDate, readOnly) {
         ${dayMeetings.map(m => {
           const c = STATUS_STYLE[m.status] || STATUS_STYLE["Cancelled"];
           const timeRange = m.timeStart ? formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS) : "—";
-          return `<div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${c.border};border-radius:8px;padding:10px 12px">
+          const isAdminCreated = m.createdByRole === ROLES.ADMIN;
+          return `<div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${isAdminCreated ? "#1d4ed8" : c.border};border-radius:8px;padding:10px 12px">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
               <div style="min-width:0">
-                <div style="font-weight:600;font-size:0.85rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.eventName || "Meeting"}</div>
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                  <div style="font-weight:600;font-size:0.85rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(m.eventName) || "Meeting"}</div>
+                  ${isAdminCreated ? `<span style="font-size:0.65rem;font-weight:700;background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;">Admin Scheduled</span>` : ""}
+                </div>
                 <div style="font-size:0.75rem;color:${c.text};opacity:.85;margin-top:3px;display:flex;flex-wrap:wrap;gap:6px">
                   <span style="display:inline-flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>${timeRange}</span>
                   <span style="display:inline-flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><path d="M12 7v5l3 3"/></svg>${m.durationHours || SLOT_DURATION_HOURS}h</span>
-                  ${m.venue ? `<span style="display:inline-flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>${m.venue}</span>` : ""}
+                  ${m.venue ? `<span style="display:inline-flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>${h(m.venue)}</span>` : ""}
                 </div>
-                ${m.councilor ? `<div style="font-size:0.72rem;color:${c.text};opacity:.7;margin-top:3px;display:flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>${m.councilor}</div>` : ""}
-                ${m.committee ? `<div style="font-size:0.72rem;color:${c.text};opacity:.7;display:flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="7" width="20" height="14" rx="1"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>${m.committee}</div>` : ""}
-                ${m.adminNote ? `<div style="font-size:0.7rem;color:${c.text};opacity:.65;margin-top:4px;font-style:italic;display:flex;align-items:center;gap:3px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>${m.adminNote}</div>` : ""}
+                ${m.councilor ? `<div style="font-size:0.72rem;color:${c.text};opacity:.7;margin-top:3px;display:flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>${h(m.councilor)}</div>` : ""}
+                ${m.committee ? `<div style="font-size:0.72rem;color:${c.text};opacity:.7;display:flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="7" width="20" height="14" rx="1"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>${h(m.committee)}</div>` : ""}
+                ${m.adminNote ? `<div style="font-size:0.7rem;color:${c.text};opacity:.65;margin-top:4px;font-style:italic;display:flex;align-items:center;gap:3px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>${h(m.adminNote)}</div>` : ""}
               </div>
               <span style="flex-shrink:0;font-size:0.68rem;font-weight:700;background:white;color:${c.text};border:1px solid ${c.border};padding:2px 8px;border-radius:999px;white-space:nowrap">${m.status}</span>
             </div>
@@ -1754,10 +1853,17 @@ function openDayScheduleModal(isoDate, readOnly) {
       </div>`;
   }
 
+  const body = document.getElementById("day-schedule-body");
+  const footer = document.getElementById("day-modal-footer");
+
+  body.scrollTop = 0;
   body.innerHTML = timelineHtml + meetingListHtml;
 
+  // Re-trigger animation
+  const modalInner = modal.querySelector(".modal");
+  if (modalInner) { modalInner.style.animation = "none"; requestAnimationFrame(() => { modalInner.style.animation = ""; }); }
+
   // Footer
-  const footer = document.getElementById("day-modal-footer");
   if (canBook && !isFullyBooked && !holidayInfo) {
     footer.innerHTML = `
       <button id="day-modal-cancel-btn" class="btn btn-ghost btn-sm">Close</button>
@@ -1794,36 +1900,39 @@ function buildTimelineHTML(isoDate, dayMeetings) {
   function pct(mins) { return ((mins - WORK_START_HOUR * 60) / totalWork * 100).toFixed(2); }
   function wPct(mins) { return (mins / totalWork * 100).toFixed(2); }
 
-  // Hour ticks
-  const ticks = [];
-  for (let h = WORK_START_HOUR; h <= WORK_END_HOUR; h++) {
-    ticks.push(`<div style="position:absolute;left:${pct(h*60)}%;top:0;bottom:0;border-left:1px dashed rgba(0,0,0,0.1);pointer-events:none"></div>
-      <div style="position:absolute;left:${pct(h*60)}%;top:calc(100% + 3px);font-size:0.58rem;color:var(--color-text-muted);transform:translateX(-50%)">${h < 12 ? h + 'a' : h === 12 ? '12p' : (h - 12) + 'p'}</div>`);
+  // Hour ticks (lines inside bar) and labels (outside bar, below)
+  const tickLines = [];
+  const tickLabels = [];
+  for (let hr = WORK_START_HOUR; hr <= WORK_END_HOUR; hr++) {
+    tickLines.push(`<div style="position:absolute;left:${pct(hr*60)}%;top:0;bottom:0;border-left:1px dashed rgba(0,0,0,0.1);pointer-events:none"></div>`);
+    tickLabels.push(`<div style="position:absolute;left:${pct(hr*60)}%;font-size:0.58rem;color:var(--color-text-muted);transform:translateX(-50%)">${hr < 12 ? hr + 'a' : hr === 12 ? '12p' : (hr - 12) + 'p'}</div>`);
   }
+  const ticks = tickLines; // only lines go inside the bar now
 
   // Approved blocks (solid red)
   const approvedBlocks = approved.map(m => {
     const s = minutesFromTimeStr(m.timeStart);
     const dur = (m.durationHours || SLOT_DURATION_HOURS) * 60;
-    return `<div title="${m.eventName} (Approved)" style="position:absolute;left:${pct(s)}%;width:${wPct(dur)}%;top:4px;bottom:4px;background:#16a34a;border-radius:4px;opacity:0.85;cursor:default"></div>`;
+    return `<div title="${h(m.eventName)} (Approved)" style="position:absolute;left:${pct(s)}%;width:${wPct(dur)}%;top:4px;bottom:4px;background:#16a34a;border-radius:4px;opacity:0.85;cursor:default"></div>`;
   }).join("");
 
   // Pending blocks (amber)
   const pendingBlocks = pending.map(m => {
     const s = minutesFromTimeStr(m.timeStart);
     const dur = (m.durationHours || SLOT_DURATION_HOURS) * 60;
-    return `<div title="${m.eventName} (Pending)" style="position:absolute;left:${pct(s)}%;width:${wPct(dur)}%;top:4px;bottom:4px;background:#f59e0b;border-radius:4px;opacity:0.75;cursor:default"></div>`;
+    return `<div title="${h(m.eventName)} (Pending)" style="position:absolute;left:${pct(s)}%;width:${wPct(dur)}%;top:4px;bottom:4px;background:#f59e0b;border-radius:4px;opacity:0.75;cursor:default"></div>`;
   }).join("");
 
   return `
     <div style="margin-bottom:16px">
       <div style="font-size:0.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:8px">Time Slots (8AM – 5PM)</div>
-      <div style="position:relative;height:32px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:8px;overflow:visible;margin-bottom:18px">
+      <div style="position:relative;height:32px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:8px;overflow:hidden;margin-bottom:6px">
         ${ticks.join("")}
         ${approvedBlocks}
         ${pendingBlocks}
       </div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div style="position:relative;height:14px;margin-bottom:10px">${tickLabels.join("")}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:-14px">
         <div style="display:flex;align-items:center;gap:5px;font-size:0.72rem;color:var(--color-text-muted)">
           <span style="width:12px;height:10px;border-radius:3px;background:#16a34a;display:inline-block"></span> Approved
         </div>
@@ -1992,12 +2101,35 @@ function handleMeetingSubmit(e) {
   closeMeetingModal();
   openConfirmModal(
     "Confirm Meeting Request",
-    `<strong>${eventName}</strong><br>
-     Date: ${formatDateDisplay(isoDate)}<br>
-     Time: ${formatTimeRange(timeStart, durationHours)}<br>
-     Venue: ${venue}<br>
-     Type: ${type}<br><br>
-     Submit this meeting request?`,
+    `<div style="font-size:0.88rem;color:var(--color-text-muted);margin-bottom:12px;line-height:1.5">Please review the details below before submitting.</div>
+     <div style="background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:10px;overflow:hidden">
+       <div style="padding:12px 14px;border-bottom:1px solid var(--color-border)">
+         <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:3px">Event</div>
+         <div style="font-weight:700;font-size:0.95rem;color:var(--color-text)">${h(eventName)}</div>
+       </div>
+       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border);border-right:1px solid var(--color-border)">
+           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Date</div>
+           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${formatDateDisplay(isoDate)}</div>
+         </div>
+         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border)">
+           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Time</div>
+           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${formatTimeRange(timeStart, durationHours)}</div>
+         </div>
+         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border);border-right:1px solid var(--color-border)">
+           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Venue</div>
+           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${h(venue) || "—"}</div>
+         </div>
+         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border)">
+           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Type</div>
+           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${h(type) || "—"}</div>
+         </div>
+       </div>
+       <div style="padding:10px 14px;background:var(--color-primary-soft);display:flex;align-items:center;gap:8px">
+         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--brand-blue)" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
+         <span style="font-size:0.78rem;color:var(--brand-blue);font-weight:500">Submit this meeting request?</span>
+       </div>
+     </div>`,
     () => {
       const meeting = {
         id: `mtg_${Math.random().toString(36).slice(2, 9)}`,
@@ -2581,7 +2713,7 @@ document.addEventListener("DOMContentLoaded", () => {
                  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
                    <div style="min-width:0">
                      <div style="font-weight:700;font-size:0.88rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                       ${m.eventName || "Meeting"}
+                       ${h(m.eventName) || "Meeting"}
                      </div>
                      <div style="font-size:0.77rem;color:${c.text};opacity:.85;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px">
                        <span style="display:inline-flex;align-items:center;gap:3px">
@@ -2599,21 +2731,21 @@ document.addEventListener("DOMContentLoaded", () => {
                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
                            <circle cx="12" cy="10" r="3"/>
-                         </svg>${m.venue}</span>` : ""}
+                         </svg>${h(m.venue)}</span>` : ""}
                      </div>
                      ${m.councilor ? `<div style="font-size:0.73rem;color:${c.text};opacity:.72;margin-top:4px;display:flex;align-items:center;gap:3px">
                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                          <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-                       </svg>${m.councilor}</div>` : ""}
+                       </svg>${h(m.councilor)}</div>` : ""}
                      ${m.committee ? `<div style="font-size:0.73rem;color:${c.text};opacity:.72;display:flex;align-items:center;gap:3px">
                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                          <rect x="2" y="7" width="20" height="14" rx="1"/>
                          <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
-                       </svg>${m.committee}</div>` : ""}
+                       </svg>${h(m.committee)}</div>` : ""}
                      ${m.adminNote ? `<div style="font-size:0.71rem;color:${c.text};opacity:.65;margin-top:5px;font-style:italic;display:flex;align-items:center;gap:3px">
                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                       </svg>${m.adminNote}</div>` : ""}
+                       </svg>${h(m.adminNote)}</div>` : ""}
                    </div>
                    <span style="flex-shrink:0;font-size:0.69rem;font-weight:700;background:white;color:${c.text};border:1px solid ${c.border};padding:3px 9px;border-radius:999px;white-space:nowrap">
                      ${m.status}
@@ -2789,7 +2921,11 @@ document.addEventListener("DOMContentLoaded", () => {
         _dbUpdateEndPreview();
       });
       document.getElementById("db-time")?.addEventListener("change", _dbUpdateEndPreview);
-      document.getElementById("db-duration")?.addEventListener("change", _dbUpdateEndPreview);
+      document.getElementById("db-duration")?.addEventListener("change", function () {
+        const d = document.getElementById("db-date")?.value;
+        _dbPopulateTime(d);
+        _dbUpdateEndPreview();
+      });
 
       document.getElementById("db-type")?.addEventListener("change", function () {
         document.getElementById("db-type-other").style.display =
@@ -2805,10 +2941,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // ── Booking drawer helpers ─────────────────────────────────────────────────
 
   function _dbPopulateTime(isoDate) {
-    const sel = document.getElementById("db-time");
+    const sel  = document.getElementById("db-time");
     const hint = document.getElementById("db-time-hint");
+    const durEl = document.getElementById("db-duration");
     if (!sel) return;
 
+    const dur = parseInt(durEl?.value) || SLOT_DURATION_HOURS;
     const approved = meetings.filter(
       m => m.date === isoDate && m.status === "Approved"
     );
@@ -2816,19 +2954,26 @@ document.addEventListener("DOMContentLoaded", () => {
     let count = 0;
 
     for (let h = WORK_START_HOUR; h < WORK_END_HOUR; h++) {
-      const timeStr = `${String(h).padStart(2, "0")}:00`;
+      const slotStart = h * 60;
+      const slotEnd   = slotStart + dur * 60;
+
+      // Skip if duration would exceed office hours
+      if (slotEnd > WORK_END_HOUR * 60) continue;
+
+      // Skip if this slot overlaps any approved meeting
       const blocked = approved.some(m => {
         const s = minutesFromTimeStr(m.timeStart);
         const e = s + (m.durationHours || SLOT_DURATION_HOURS) * 60;
-        return h * 60 >= s && h * 60 < e;
+        return slotStart < e && slotEnd > s;
       });
+
       if (!blocked) {
         const label = h < 12
           ? `${h}:00 AM`
           : h === 12 ? "12:00 PM"
           : `${h - 12}:00 PM`;
         const opt = document.createElement("option");
-        opt.value = timeStr;
+        opt.value = `${String(h).padStart(2, "0")}:00`;
         opt.textContent = label;
         sel.appendChild(opt);
         count++;
@@ -2898,7 +3043,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const timeStart    = get("db-time");
     const durationHours = parseInt(get("db-duration"));
     const typeVal      = get("db-type");
-    const meetingType  = typeVal === "Others" ? get("db-type-other") : typeVal;
+    const type         = typeVal === "Others" ? get("db-type-other") : typeVal;
     const venueVal     = get("db-venue");
     const venue        = venueVal === "Others" ? get("db-venue-other") : venueVal;
     const notes        = get("db-notes");
@@ -2917,19 +3062,37 @@ document.addEventListener("DOMContentLoaded", () => {
     const btn = document.getElementById("db-submit");
     if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
 
-    api.addMeeting({
+    window.api.addMeeting({
+      id: `mtg_${Math.random().toString(36).slice(2, 9)}`,
       eventName, committee, councilor, researcher,
       date, timeStart, durationHours,
-      meetingType, venue, notes,
+      type, venue, notes,
       status: "Pending",
-      createdBy: currentUser.id || currentUser.username,
+      createdBy: currentUser.username,
+      createdByRole: currentUser.role,
       createdAt: new Date().toISOString(),
     }).then(() => {
+      // Notify all admins of new request
+      users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
+        addNotification(
+          admin.id || admin.username,
+          `New meeting request from <strong>${currentUser.name}</strong>: <strong>"${eventName}"</strong> on ${formatDateDisplay(date)} at ${formatTimeRange(timeStart, durationHours)}. Review and take action.`,
+          "info",
+          "meeting-logs"
+        );
+      });
+      // Optimistic badge refresh
+      updateNotificationBadge(currentUser.id || currentUser.username);
+
       showToast("Meeting request submitted! Awaiting admin approval.", "success");
+      renderCalendar();
+      renderMyMeetingsTable(currentUser);
+      renderAdminMeetingsTable();
+      updateStatistics();
       _closeActive();
     }).catch(() => {
       if (msg) msg.textContent = "Failed to save. Please try again.";
-      if (btn) { btn.disabled = false; btn.textContent = "Save Schedule"; }
+      if (btn) { btn.disabled = false; btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg> Save Schedule`; }
     });
   }
 

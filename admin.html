@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Dark mode anti-flicker: must run before any CSS renders -->
+    <script>if(localStorage.getItem('sbp_dark')==='1')document.documentElement.setAttribute('data-theme','dark');</script>
     <title>SB Polangui | Admin Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -682,8 +684,6 @@
     </nav>
 
     <!-- Scripts (unchanged) -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
@@ -769,7 +769,7 @@
         }
         var TYPE_COLORS = { 'Regular':'#1d4ed8','Special':'#7c3aed' };
         var typeCounts = {};
-        mtgs.forEach(function(m) { var t = m.type || 'Other'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
+        mtgs.forEach(function(m) { var t = m.type || m.meetingType || 'Other'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
         var typeKeys = Object.keys(typeCounts);
         var typeMax = Math.max.apply(null, typeKeys.map(function(k){ return typeCounts[k]; })) || 1;
         var typeChart = document.getElementById('type-bar-chart');

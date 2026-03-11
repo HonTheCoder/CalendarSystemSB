@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Dark mode anti-flicker: must run before any CSS renders -->
+    <script>if(localStorage.getItem('sbp_dark')==='1')document.documentElement.setAttribute('data-theme','dark');</script>
     <title>SB Polangui | User Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -467,7 +469,13 @@
         document.querySelectorAll('.bottom-nav-item[data-section]').forEach(function (a) {
           a.addEventListener('click', function (e) { e.preventDefault(); switchSection(a.dataset.section); });
         });
-        document.addEventListener('DOMContentLoaded', function () { switchSection('dashboard'); });
+        document.addEventListener('DOMContentLoaded', function () {
+          try {
+            var saved = sessionStorage.getItem('user_section');
+            if (saved && document.getElementById('section-' + saved)) { switchSection(saved); }
+            else { switchSection('dashboard'); }
+          } catch(e) { switchSection('dashboard'); }
+        });
       })();
     </script>
 
@@ -516,7 +524,7 @@
         }
         var TYPE_COLORS = { 'Regular': '#1d4ed8', 'Special': '#7c3aed' };
         var typeCounts = {};
-        mine.forEach(function(m) { var t = m.type || 'Other'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
+        mine.forEach(function(m) { var t = m.type || m.meetingType || 'Other'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
         var typeKeys = Object.keys(typeCounts);
         var typeMax = Math.max.apply(null, typeKeys.map(function(k){ return typeCounts[k]; })) || 1;
         var typeChart = document.getElementById('user-type-bar-chart');
@@ -539,7 +547,7 @@
             upcomingList.innerHTML = upcoming.map(function(m) {
               var color = STATUS_COLORS[m.status] || '#9ca3af';
               var dateDisplay = new Date(m.date).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
-              return '<div class="upcoming-preview-item"><div><div class="upcoming-preview-name">' + (m.eventName || 'Meeting') + '</div><div class="upcoming-preview-meta">' + dateDisplay + ' · ' + (m.type || '') + ' · ' + (m.venue || '') + '</div></div><span class="badge badge-pill" style="background:' + color + ';color:#fff;font-size:0.7rem;padding:2px 10px;border-radius:999px;">' + m.status + '</span></div>';
+              return '<div class="upcoming-preview-item"><div><div class="upcoming-preview-name">' + (m.eventName || 'Meeting') + '</div><div class="upcoming-preview-meta">' + dateDisplay + ' · ' + (m.type || m.meetingType || '') + ' · ' + (m.venue || '') + '</div></div><span class="badge badge-pill" style="background:' + color + ';color:#fff;font-size:0.7rem;padding:2px 10px;border-radius:999px;">' + m.status + '</span></div>';
             }).join('');
           }
         }

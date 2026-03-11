@@ -711,16 +711,37 @@ tbody tr:hover { background: var(--color-primary-soft); }
 }
 .modal-open { display: flex !important; }
 
+/* Confirm modal body text — theme-aware */
+.confirm-modal-body-inner {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  line-height: 1.6;
+}
+[data-theme="dark"] .confirm-modal-body-inner {
+  color: var(--color-text);
+}
+
+#confirm-modal  { z-index: 600; }
+#note-modal     { z-index: 600; }
+
 .modal {
   background: var(--color-surface);
   border-radius: var(--radius-xl);
   width: 100%; max-width: 560px;
+  /* Use fit-content height so small modals don't stretch, but cap at 92vh */
+  height: fit-content;
   max-height: 92vh;
   display: flex; flex-direction: column;
   box-shadow: var(--shadow-modal);
   overflow: hidden;
   border: 1px solid var(--color-border);
   transition: background 0.25s;
+  animation: modal-pop 0.2s ease both;
+}
+
+@keyframes modal-pop {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .modal-header {
@@ -728,10 +749,12 @@ tbody tr:hover { background: var(--color-primary-soft); }
   padding: 16px 20px;
   border-bottom: 1px solid var(--color-border);
   background: linear-gradient(90deg, var(--brand-gold-soft), transparent 70%);
+  flex-shrink: 0;
 }
 .modal-title  { font-weight: 800; font-size: 0.95rem; color: var(--color-text); font-family: var(--font-display); }
-.modal-body   { padding: 20px; overflow-y: auto; flex: 1 1 0; min-height: 0; }
-.modal-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--color-border); background: var(--color-surface-2); }
+/* flex-shrink:1 so body can shrink; overflow-y:auto only kicks in when content exceeds max-height */
+.modal-body   { padding: 20px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.modal-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--color-border); background: var(--color-surface-2); flex-shrink: 0; }
 
 /* --------------------------------------------------------------------------
    16b. BOTTOM DRAWER — mobile only, completely separate from .modal system
@@ -1460,8 +1483,92 @@ body[data-page="login"] {
   .auth-header           { flex-direction: column; text-align: center; align-items: center; }
   .auth-logo-wrapper img { width: 70px; height: 70px; }
   .calendar-cell         { min-height: 52px; }
+}
+
+/* ── Mobile calendar: clean compact dot-indicator cells ── */
+@media (max-width: 600px) {
+  /* Container adjustments */
+  .calendar-grid        { gap: 3px; }
+  .calendar-weekdays    { gap: 3px; margin-bottom: 3px; }
+  .calendar-weekday     { font-size: 0.6rem; padding: 5px 0; letter-spacing: 0.04em; }
+
+  /* Cell: taller so date + dots breathe */
+  .calendar-cell {
+    min-height: 58px;
+    padding: 6px 4px 5px;
+    border-radius: 10px;
+    gap: 0;
+    justify-content: space-between;
+  }
+
+  /* Date number */
+  .calendar-cell-date   { font-size: 0.78rem; }
+  .calendar-cell-header { min-height: 20px; flex-direction: column; align-items: center; gap: 0; }
+
+  /* Today circle */
+  .calendar-cell-today .calendar-cell-date {
+    width: 22px; height: 22px; font-size: 0.72rem;
+  }
+
+  /* Hide text labels — too cramped */
+  .calendar-holiday-label { display: none; }
+  .calendar-weekend-label { display: none; }
+
+  /* Hide text badges — replace with dot row below */
+  .calendar-badge { display: none; }
+
+  /* Full badge: just a tiny bar at bottom */
+  .calendar-full-badge  { display: none; }
+  .calendar-cell-full   {
+    border-color: #FCA5A5 !important;
+    border-width: 2px !important;
+    background: rgba(252, 165, 165, 0.07) !important;
+  }
+
+  /* ── Dot indicators ── */
+  /* Each cell gets a flex row of dots at its bottom  */
+  .calendar-cell::after {
+    content: '';
+    display: block;
+    height: 5px; /* reserved space — actual dots injected via JS */
+  }
+
+  /* Holiday cell tint */
+  .calendar-cell-holiday {
+    background: rgba(245,163,26,0.12) !important;
+  }
+
+  /* Hover / active state for mobile tap */
+  .calendar-cell:not(:disabled):not(.calendar-cell-muted):active {
+    transform: scale(0.95);
+    transition: transform 0.1s;
+  }
+
+  /* Auth page */
   .auth-card-inner       { padding: 22px 18px 20px; }
   .auth-right-inner      { padding: 26px 20px 20px; }
   .auth-right-strip      { padding: 10px 20px; }
   .auth-welcome-title    { font-size: 1.25rem; }
 }
+
+/* Dot row injected by renderCalendar() into .calendar-cell-dots */
+.calendar-cell-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  min-height: 8px;
+  margin-top: 2px;
+}
+.calendar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.calendar-dot-approved  { background: #16a34a; }
+.calendar-dot-pending   { background: #f59e0b; }
+.calendar-dot-cancelled { background: #9ca3af; }
+.calendar-dot-other     { background: #3b82f6; }
+.calendar-dot-full      { background: #dc2626; width: 100%; height: 3px; border-radius: 2px; margin-top: 1px; }
