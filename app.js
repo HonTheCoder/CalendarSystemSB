@@ -13,13 +13,18 @@ const ROLES = {
   VICE_MAYOR: "Vice Mayor",
   COUNCILOR: "Councilor",
   RESEARCHER: "Researcher",
+  SECRETARY: "Secretary",
 };
 
 const ROLE_LIMITS = {
   [ROLES.COUNCILOR]: 10,
   [ROLES.RESEARCHER]: 10,
   [ROLES.VICE_MAYOR]: 1,
+  [ROLES.SECRETARY]: 1,
 };
+
+// Roles that are special accounts (not full admins) routed to user.html
+const SPECIAL_ROLES = [ROLES.VICE_MAYOR, ROLES.SECRETARY];
 
 const WORK_START_HOUR = 8;
 const WORK_END_HOUR = 17;
@@ -167,20 +172,27 @@ function showStorageFallbackWarning() {
 
 // ---------------------------------------------------------------------------
 // Session Timeout
+// Bug fix: use sessionStorage for the expiry so it resets when the browser/tab
+// is closed — prevents a stale localStorage timestamp from keeping a session
+// alive across browser restarts. Current-user identity remains in localStorage
+// (intentional: survives page reload within same inactivity window).
 // ---------------------------------------------------------------------------
 
 function refreshSession() {
-  save(STORAGE_KEYS.SESSION_EXPIRY, Date.now() + SESSION_TIMEOUT_MS);
+  try { sessionStorage.setItem(STORAGE_KEYS.SESSION_EXPIRY, String(Date.now() + SESSION_TIMEOUT_MS)); } catch(e) {}
 }
 
 function checkSessionExpiry() {
-  const expiry = load(STORAGE_KEYS.SESSION_EXPIRY, null);
-  if (expiry && Date.now() > expiry) {
-    setCurrentUser(null);
-    localStorage.removeItem(STORAGE_KEYS.SESSION_EXPIRY);
-    window.location.href = "./index.html?timeout=1";
-    return false;
-  }
+  try {
+    const expiry = parseInt(sessionStorage.getItem(STORAGE_KEYS.SESSION_EXPIRY) || "0", 10);
+    if (expiry && Date.now() > expiry) {
+      setCurrentUser(null);
+      sessionStorage.removeItem(STORAGE_KEYS.SESSION_EXPIRY);
+      localStorage.removeItem(STORAGE_KEYS.SESSION_EXPIRY); // clean up any legacy localStorage value
+      window.location.href = "./index.html?timeout=1";
+      return false;
+    }
+  } catch(e) {}
   return true;
 }
 
@@ -238,7 +250,8 @@ function updateNotificationBadge(userId) {
   // Also update pending badge on meeting-logs nav link (admin only)
   const pendingBadge = document.getElementById("pending-badge");
   if (pendingBadge) {
-    const pendingCount = (meetings || []).filter(m => m.status === "Pending" || m.status === "Cancellation Requested").length;
+    const safeMeetings = (typeof meetings !== "undefined" && Array.isArray(meetings)) ? meetings : [];
+    const pendingCount = safeMeetings.filter(m => m.status === "Pending" || m.status === "Cancellation Requested").length;
     pendingBadge.textContent = String(pendingCount);
     pendingBadge.style.display = pendingCount > 0 ? "flex" : "none";
   }
@@ -529,6 +542,7 @@ function roleChipClass(role) {
     "Councilor": "chip-role chip-role-councilor",
     "Researcher": "chip-role chip-role-researcher",
     "Vice Mayor": "chip-role chip-role-vicemayor",
+    "Secretary": "chip-role chip-role-secretary",
   };
   return map[role] || "chip-role";
 }
@@ -565,7 +579,8 @@ function requireAuth({ allowAdmin, allowCouncilor, allowResearcher, onFail }) {
   const ok = (role === ROLES.ADMIN && allowAdmin) ||
               (role === ROLES.COUNCILOR && allowCouncilor) ||
               (role === ROLES.RESEARCHER && allowResearcher) ||
-              (role === ROLES.VICE_MAYOR && allowCouncilor);
+              (role === ROLES.VICE_MAYOR && allowCouncilor) ||
+              (role === ROLES.SECRETARY && allowCouncilor);
   if (!ok) {
     if (onFail === "button") { showAccessDeniedPage("Your role cannot access this page."); return null; }
     window.location.href = "./index.html";
@@ -600,14 +615,16 @@ function attachCommonHeader(user) {
   if (sidebarRole) sidebarRole.textContent = user.role;
   if (logoutBtn) {
     logoutBtn.addEventListener("click", () => {
-      openConfirmModal(
-        "Sign Out",
-        "Are you sure you want to sign out? Any unsaved changes will be lost.",
-        () => {
-          setCurrentUser(null);
-          window.location.href = "./index.html";
-        }
-      );
+      const doLogout = () => { setCurrentUser(null); window.location.href = "./index.html"; };
+      if (window.innerWidth <= 768 && typeof window.openLogoutDrawer === "function") {
+        window.openLogoutDrawer(doLogout);
+      } else {
+        openConfirmModal(
+          "Sign Out",
+          "Are you sure you want to sign out? Any unsaved changes will be lost.",
+          doLogout
+        );
+      }
     });
   }
 
@@ -747,6 +764,7 @@ function openForcePasswordChangeModal(account) {
       showToast("Password updated. Welcome!", "success");
       const current = { id: account.id, username: account.username, role: account.role, name: account.name || account.username };
       setCurrentUser(current);
+      try { sessionStorage.setItem('sbp_just_logged_in', '1'); } catch(e) {}
       window.location.href = current.role === ROLES.ADMIN ? "./admin.html" : "./user.html";
     } catch (err) {
       errEl.textContent = "Failed to update password. Please try again.";
@@ -783,8 +801,72 @@ async function initLoginPage() {
   const errorEl = $("#login-error");
   if (!form) return;
 
+  // ── Bug fix: brute-force lockout ─────────────────────────────────────────
+  // Track failed attempts in sessionStorage (resets on browser close).
+  // After 5 failures, lock the form for 30 seconds.
+  const LOCKOUT_MAX   = 5;
+  const LOCKOUT_MS    = 30 * 1000;
+  const LS_ATTEMPTS   = "sbp_login_attempts";
+  const LS_LOCKOUT_TS = "sbp_login_lockout_ts";
+
+  function getAttempts()  { return parseInt(sessionStorage.getItem(LS_ATTEMPTS)  || "0", 10); }
+  function getLockoutTs() { return parseInt(sessionStorage.getItem(LS_LOCKOUT_TS) || "0", 10); }
+
+  function isLockedOut() {
+    const ts = getLockoutTs();
+    if (!ts) return false;
+    if (Date.now() < ts) return true;
+    // Lockout expired — clear it
+    sessionStorage.removeItem(LS_ATTEMPTS);
+    sessionStorage.removeItem(LS_LOCKOUT_TS);
+    return false;
+  }
+
+  function recordFailedAttempt() {
+    const next = getAttempts() + 1;
+    sessionStorage.setItem(LS_ATTEMPTS, String(next));
+    if (next >= LOCKOUT_MAX) {
+      sessionStorage.setItem(LS_LOCKOUT_TS, String(Date.now() + LOCKOUT_MS));
+    }
+    return next;
+  }
+
+  function clearAttempts() {
+    sessionStorage.removeItem(LS_ATTEMPTS);
+    sessionStorage.removeItem(LS_LOCKOUT_TS);
+  }
+
+  // Show remaining lockout time and re-enable once expired
+  function showLockoutError() {
+    const remaining = Math.ceil((getLockoutTs() - Date.now()) / 1000);
+    if (errorEl) {
+      errorEl.textContent = `Too many failed attempts. Please wait ${remaining}s before trying again.`;
+      errorEl.classList.add("auth-error-visible");
+    }
+    const loginBtn = $("#login-btn");
+    if (loginBtn) { loginBtn.disabled = true; }
+    const interval = setInterval(() => {
+      if (!isLockedOut()) {
+        clearInterval(interval);
+        if (errorEl) errorEl.classList.remove("auth-error-visible");
+        if (loginBtn) { loginBtn.disabled = false; }
+      } else {
+        const rem = Math.ceil((getLockoutTs() - Date.now()) / 1000);
+        if (errorEl) errorEl.textContent = `Too many failed attempts. Please wait ${rem}s before trying again.`;
+      }
+    }, 1000);
+  }
+
+  // If page loaded while still locked out, show immediately
+  if (isLockedOut()) showLockoutError();
+  // ─────────────────────────────────────────────────────────────────────────
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+
+    // Lockout guard
+    if (isLockedOut()) { showLockoutError(); return; }
+
     const username = $("#login-username").value.trim();
     const password = $("#login-password").value;
 
@@ -825,7 +907,13 @@ async function initLoginPage() {
     }
 
     if (!account) {
-      setError("Invalid username or password.");
+      const attempts = recordFailedAttempt();
+      const remaining = LOCKOUT_MAX - attempts;
+      if (isLockedOut()) {
+        showLockoutError();
+      } else {
+        setError(`Invalid username or password.${remaining > 0 ? ` (${remaining} attempt${remaining !== 1 ? "s" : ""} remaining)` : ""}`);
+      }
       return;
     }
 
@@ -837,8 +925,10 @@ async function initLoginPage() {
       return;
     }
 
+    clearAttempts(); // successful login — reset the counter
     const current = { id: account.id, username: account.username, role: account.role, name: account.name || account.username };
     setCurrentUser(current);
+    try { sessionStorage.setItem('sbp_just_logged_in', '1'); } catch(e) {}
     window.location.href = current.role === ROLES.ADMIN ? "./admin.html" : "./user.html";
   });
 }
@@ -853,9 +943,9 @@ function countUsersByRole(role) {
 
 function renderUsersTable() {
   const tbody = $("#user-table-body");
-  if (!tbody) return;
+  const specialTbody = $("#special-accounts-table-body");
 
-  let list = [...users];
+  let list = [...users].filter(u => u.role !== ROLES.ADMIN);
   if (usersSearch) {
     const q = usersSearch.toLowerCase();
     list = list.filter(u =>
@@ -865,46 +955,240 @@ function renderUsersTable() {
     );
   }
 
-  // Pagination
-  const totalPages = Math.max(1, Math.ceil(list.length / MEETINGS_PAGE_SIZE));
-  if (usersPage > totalPages) usersPage = totalPages;
-  const paginated = list.slice((usersPage - 1) * MEETINGS_PAGE_SIZE, usersPage * MEETINGS_PAGE_SIZE);
+  const specialRoles = [ROLES.VICE_MAYOR, ROLES.SECRETARY];
+  const regularList = list.filter(u => !specialRoles.includes(u.role));
+  const specialList = list.filter(u => specialRoles.includes(u.role));
 
-  if (!paginated.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No user accounts found.</td></tr>';
-    renderPagination("users-pagination", totalPages, usersPage, (p) => { usersPage = p; renderUsersTable(); });
-    return;
+  // Render special accounts table (Vice Mayor, Secretary)
+  if (specialTbody) {
+    if (!specialList.length) {
+      specialTbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No special accounts created yet.</td></tr>';
+    } else {
+      specialTbody.innerHTML = specialList.map(u => `<tr>
+        <td>${h(u.username)}</td>
+        <td>${h(u.name || "")}</td>
+        <td><span class="${roleChipClass(u.role)}">${u.role}</span></td>
+        <td>
+          <button class="btn btn-sm btn-ghost" data-action="view-user" data-user-id="${u.id}">View</button>
+          <button class="btn btn-sm btn-ghost" data-action="change-password" data-user-id="${u.id}">Change Password</button>
+          <button class="btn btn-sm btn-ghost" data-action="remove-user" data-user-id="${u.id}">Remove</button>
+        </td>
+      </tr>`).join("");
+    }
   }
 
-  tbody.innerHTML = paginated.map(u => {
-    const isAdmin = u.role === ROLES.ADMIN;
-    return `<tr>
+  // Render regular users with pagination
+  if (!tbody) return;
+  const totalPages = Math.max(1, Math.ceil(regularList.length / MEETINGS_PAGE_SIZE));
+  if (usersPage > totalPages) usersPage = totalPages;
+  const paginated = regularList.slice((usersPage - 1) * MEETINGS_PAGE_SIZE, usersPage * MEETINGS_PAGE_SIZE);
+
+  if (!paginated.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No regular user accounts found.</td></tr>';
+  } else {
+    tbody.innerHTML = paginated.map(u => `<tr>
       <td>${h(u.username)}</td>
       <td>${h(u.name || "")}</td>
       <td><span class="${roleChipClass(u.role)}">${u.role}</span></td>
       <td>
+        <button class="btn btn-sm btn-ghost" data-action="view-user" data-user-id="${u.id}">View</button>
         <button class="btn btn-sm btn-ghost" data-action="change-password" data-user-id="${u.id}">Change Password</button>
-        ${!isAdmin ? `<button class="btn btn-sm btn-ghost" data-action="remove-user" data-user-id="${u.id}">Remove</button>` : ""}
+        <button class="btn btn-sm btn-ghost" data-action="remove-user" data-user-id="${u.id}">Remove</button>
       </td>
-    </tr>`;
-  }).join("");
+    </tr>`).join("");
+  }
 
   renderPagination("users-pagination", totalPages, usersPage, (p) => { usersPage = p; renderUsersTable(); });
 }
 
+
+// Returns the role-based username prefix, e.g. "Councilor" → "councilor_"
+function getRolePrefix(role) {
+  const map = {
+    [ROLES.COUNCILOR]:  "councilor_",
+    [ROLES.RESEARCHER]: "researcher_",
+    [ROLES.VICE_MAYOR]: "vicemayor_",
+    [ROLES.SECRETARY]:  "secretary_",
+  };
+  return map[role] || "";
+}
+
+// Build the final username: prefix + sanitised input (strip existing prefix if user typed it)
+function buildPrefixedUsername(rawInput, role) {
+  const prefix = getRolePrefix(role);
+  if (!prefix) return rawInput.toLowerCase().replace(/\s+/g, "_");
+  // Strip the prefix if the user already typed it (case-insensitive)
+  const stripped = rawInput.toLowerCase().replace(/\s+/g, "_");
+  const withoutPrefix = stripped.startsWith(prefix) ? stripped.slice(prefix.length) : stripped;
+  return prefix + withoutPrefix;
+}
+
+// Show a polished success popup confirming the generated username
+function showUsernameCreatedPopup(finalUsername, role, name) {
+  const old = document.getElementById("username-created-popup");
+  if (old) old.remove();
+
+  const popup = document.createElement("div");
+  popup.id = "username-created-popup";
+  popup.style.cssText = `
+    position:fixed;inset:0;z-index:9000;
+    display:flex;align-items:center;justify-content:center;
+    padding:20px;
+    background:rgba(7,15,34,0.65);
+    backdrop-filter:blur(5px);
+    animation:fadeInBg 0.2s ease both;
+  `;
+
+  popup.innerHTML = `
+    <style>
+      @keyframes fadeInBg  { from{opacity:0} to{opacity:1} }
+      @keyframes popIn     { from{opacity:0;transform:scale(0.88) translateY(16px)} to{opacity:1;transform:scale(1) translateY(0)} }
+      @keyframes checkDraw { from{stroke-dashoffset:40} to{stroke-dashoffset:0} }
+      #username-created-popup .popup-card {
+        background:var(--color-surface);border-radius:20px;padding:28px 28px 22px;
+        width:100%;max-width:380px;text-align:center;
+        box-shadow:0 28px 64px rgba(0,0,0,0.35);
+        border:1px solid var(--color-border);
+        animation:popIn 0.28s cubic-bezier(0.34,1.56,0.64,1) both;
+        display:flex;flex-direction:column;align-items:center;
+      }
+      #username-created-popup .popup-icon {
+        width:60px;height:60px;border-radius:50%;background:rgba(22,163,74,0.1);
+        display:flex;align-items:center;justify-content:center;margin-bottom:12px;
+      }
+      #username-created-popup .popup-icon svg circle { fill:none;stroke:#16a34a;stroke-width:2; }
+      #username-created-popup .popup-icon svg polyline {
+        fill:none;stroke:#16a34a;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;
+        stroke-dasharray:40;stroke-dashoffset:40;animation:checkDraw 0.4s 0.2s ease forwards;
+      }
+      #username-created-popup .popup-title { font-family:var(--font-display);font-size:1.1rem;font-weight:800;color:var(--color-text);margin-bottom:3px; }
+      #username-created-popup .popup-sub { font-size:0.78rem;color:var(--color-text-muted);margin-bottom:16px;line-height:1.5; }
+      #username-created-popup .popup-cred-box {
+        background:var(--color-bg);border:1.5px solid var(--color-border);border-radius:12px;
+        padding:14px 16px;width:100%;margin-bottom:14px;
+      }
+      #username-created-popup .popup-cred-row {
+        display:flex;align-items:center;justify-content:space-between;gap:8px;
+        padding:5px 0;border-bottom:1px solid var(--color-border-soft);
+      }
+      #username-created-popup .popup-cred-row:last-child { border-bottom:none; }
+      #username-created-popup .popup-cred-label {
+        font-size:0.65rem;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;
+        color:var(--color-text-muted);min-width:70px;text-align:left;
+      }
+      #username-created-popup .popup-cred-val {
+        font-family:var(--font-display);font-size:0.92rem;font-weight:700;
+        color:var(--brand-blue);word-break:break-all;text-align:left;flex:1;
+      }
+      #username-created-popup .popup-copy-btn {
+        padding:4px 10px;border:1px solid var(--color-border);border-radius:6px;
+        background:var(--color-surface);color:var(--color-text-muted);
+        font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;
+        transition:all 0.15s;display:flex;align-items:center;gap:4px;
+      }
+      #username-created-popup .popup-copy-btn:hover { background:var(--color-border-soft);color:var(--color-text); }
+      #username-created-popup .popup-copy-btn.copied { background:#dcfce7;color:#16a34a;border-color:#86efac; }
+      #username-created-popup .popup-copy-all-btn {
+        width:100%;padding:9px 16px;border:1.5px dashed var(--color-border);border-radius:10px;
+        background:transparent;color:var(--color-text-muted);font-size:0.8rem;font-weight:600;
+        cursor:pointer;margin-bottom:10px;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:7px;
+      }
+      #username-created-popup .popup-copy-all-btn:hover { border-color:var(--brand-blue);color:var(--brand-blue);background:rgba(27,75,138,0.04); }
+      #username-created-popup .popup-copy-all-btn.copied { border-color:#16a34a;color:#16a34a;background:#f0fdf4; }
+      #username-created-popup .popup-ok-btn {
+        width:100%;padding:11px 16px;border:none;border-radius:10px;
+        background:linear-gradient(135deg,var(--brand-blue-mid),var(--brand-blue));
+        color:#fff;font-size:0.9rem;font-weight:800;cursor:pointer;
+        font-family:var(--font-display);box-shadow:0 4px 14px rgba(27,75,138,0.3);
+        transition:transform 0.12s,box-shadow 0.15s;
+      }
+      #username-created-popup .popup-ok-btn:hover { transform:translateY(-1px);box-shadow:0 6px 18px rgba(27,75,138,0.4); }
+    </style>
+    <div class="popup-card">
+      <div class="popup-icon">
+        <svg width="34" height="34" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="7 13 10 16 17 9"/>
+        </svg>
+      </div>
+      <div class="popup-title">Account Created!</div>
+      <div class="popup-sub"><strong>${h(name)}</strong>'s account is ready.<br>Share these credentials securely:</div>
+
+      <div class="popup-cred-box">
+        <div class="popup-cred-row">
+          <span class="popup-cred-label">Username</span>
+          <span class="popup-cred-val" id="popup-username-val">${h(finalUsername)}</span>
+          <button class="popup-copy-btn" id="popup-copy-username" title="Copy username">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            Copy
+          </button>
+        </div>
+        <div class="popup-cred-row">
+          <span class="popup-cred-label">Role</span>
+          <span class="popup-cred-val"><span class="${roleChipClass(role)}">${h(role)}</span></span>
+          <span style="width:60px"></span>
+        </div>
+      </div>
+
+      <button class="popup-copy-all-btn" id="popup-copy-all">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        Copy credentials to clipboard
+      </button>
+
+      <button class="popup-ok-btn" id="popup-ok-btn">Done</button>
+    </div>
+  `;
+
+  const closePopup = () => popup.remove();
+  popup.addEventListener("click", (e) => { if (e.target === popup) closePopup(); });
+  document.body.appendChild(popup);
+
+  const copyText = (text, btn) => {
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = btn.innerHTML;
+      btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+      btn.classList.add("copied");
+      setTimeout(() => { btn.innerHTML = orig; btn.classList.remove("copied"); }, 2000);
+    }).catch(() => {
+      // Fallback for older browsers
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+      showToast("Copied!", "success");
+    });
+  };
+
+  popup.querySelector("#popup-copy-username")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    copyText(finalUsername, popup.querySelector("#popup-copy-username"));
+  });
+
+  popup.querySelector("#popup-copy-all")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const text = `Username: ${finalUsername}\nRole: ${role}\nName: ${name}`;
+    copyText(text, popup.querySelector("#popup-copy-all"));
+  });
+
+  popup.querySelector("#popup-ok-btn")?.addEventListener("click", closePopup);
+}
+
 async function handleUserFormSubmit(e) {
   e.preventDefault();
-  const username = $("#user-username").value.trim();
-  const name = $("#user-name").value.trim();
-  const password = $("#user-password").value;
-  const confirm = $("#user-confirm").value;
-  const role = $("#user-role").value;
-  const msg = $("#user-form-message");
+  const rawUsername = $("#user-username").value.trim();
+  const name        = $("#user-name").value.trim();
+  const password    = $("#user-password").value;
+  const confirm     = $("#user-confirm").value;
+  const role        = $("#user-role").value;
+  const msg         = $("#user-form-message");
 
-  if (!username || !name) { msg.textContent = "Username and full name are required."; showToast("Username and full name are required.", "error"); return; }
-  if (password.length < 6) { msg.textContent = "Password must be at least 6 characters."; showToast("Password too short.", "error"); return; }
-  if (password !== confirm) { msg.textContent = "Passwords do not match."; showToast("Passwords do not match.", "error"); return; }
-  if (users.some(u => u.username === username)) { msg.textContent = "Username already exists."; showToast("Username already exists.", "error"); return; }
+  // Build prefixed username
+  const username = buildPrefixedUsername(rawUsername, role);
+
+  if (!rawUsername || !name) { msg.textContent = "Username and full name are required."; showToast("Username and full name are required.", "error"); return; }
+  if (password.length < 6)   { msg.textContent = "Password must be at least 6 characters."; showToast("Password too short.", "error"); return; }
+  if (password !== confirm)  { msg.textContent = "Passwords do not match."; showToast("Passwords do not match.", "error"); return; }
+  if (users.some(u => u.username === username)) { msg.textContent = `Username "${username}" already exists.`; showToast("Username already exists.", "error"); return; }
 
   const limit = ROLE_LIMITS[role];
   if (limit != null && countUsersByRole(role) >= limit) {
@@ -919,23 +1203,73 @@ async function handleUserFormSubmit(e) {
     username, name, password: hashedPwd, role,
   };
 
+  const onDone = () => {
+    $("#user-form").reset();
+    msg.textContent = "";
+    renderUsersTable();
+    updateStatistics();
+    showUsernameCreatedPopup(username, role, name);
+  };
+
   if (window.api && window.api.createUser) {
     window.api.createUser(newUser).then(async () => {
       users = await window.api.getUsers();
-      $("#user-form").reset();
-      msg.textContent = "User account created successfully.";
-      showToast("User account created.", "success");
-      renderUsersTable();
-      updateStatistics();
+      onDone();
     });
   } else {
     users.push(newUser);
     persistUsers();
-    $("#user-form").reset();
-    msg.textContent = "User account created successfully.";
-    showToast("User account created.", "success");
+    onDone();
+  }
+}
+
+async function handleSpecialAccountFormSubmit(e) {
+  e.preventDefault();
+  const rawUsername = $("#special-username").value.trim();
+  const name        = $("#special-name").value.trim();
+  const password    = $("#special-password").value;
+  const confirm     = $("#special-confirm").value;
+  const role        = $("#special-role").value;
+  const msg         = $("#special-form-message");
+
+  // Build prefixed username
+  const username = buildPrefixedUsername(rawUsername, role);
+
+  if (!rawUsername || !name) { msg.textContent = "Username and full name are required."; showToast("Username and full name are required.", "error"); return; }
+  if (password.length < 6)   { msg.textContent = "Password must be at least 6 characters."; showToast("Password too short.", "error"); return; }
+  if (password !== confirm)  { msg.textContent = "Passwords do not match."; showToast("Passwords do not match.", "error"); return; }
+  if (users.some(u => u.username === username)) { msg.textContent = `Username "${username}" already exists.`; showToast("Username already exists.", "error"); return; }
+
+  const limit = ROLE_LIMITS[role];
+  if (limit != null && countUsersByRole(role) >= limit) {
+    msg.textContent = `A ${role} account already exists. Remove it first to create a new one.`;
+    showToast(`${role} account already exists.`, "error");
+    return;
+  }
+
+  const hashedPwd = await hashPassword(password);
+  const newUser = {
+    id: `user_${Math.random().toString(36).slice(2, 9)}`,
+    username, name, password: hashedPwd, role,
+  };
+
+  const onDone = async () => {
+    $("#special-account-form").reset();
+    msg.textContent = "";
     renderUsersTable();
     updateStatistics();
+    showUsernameCreatedPopup(username, role, name);
+  };
+
+  if (window.api && window.api.createUser) {
+    window.api.createUser(newUser).then(async () => {
+      users = await window.api.getUsers();
+      onDone();
+    });
+  } else {
+    users.push(newUser);
+    persistUsers();
+    onDone();
   }
 }
 
@@ -946,6 +1280,11 @@ function handleUserTableClick(e) {
   const userId = btn.dataset.userId;
   const user = users.find(u => u.id === userId);
   if (!user) return;
+
+  if (action === "view-user") {
+    openUserDrawer(userId);
+    return;
+  }
 
   if (action === "remove-user") {
     openConfirmModal(
@@ -1008,6 +1347,8 @@ function openConfirmModal(title, bodyHtml, onConfirm, onCancel) {
           <button id="confirm-modal-ok" class="btn btn-primary btn-sm">Confirm</button>
         </div>
       </div>`;
+    // Force it to always sit on top of everything and truly center in the viewport
+    modal.style.cssText = "display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;padding:20px;background:rgba(7,15,34,0.7);backdrop-filter:blur(5px);";
     document.body.appendChild(modal);
   }
 
@@ -1022,10 +1363,10 @@ function openConfirmModal(title, bodyHtml, onConfirm, onCancel) {
   const modalInner = modal.querySelector(".modal");
   if (modalInner) { modalInner.style.animation = "none"; requestAnimationFrame(() => { modalInner.style.animation = ""; }); }
 
-  modal.classList.add("modal-open");
+  modal.style.display = "flex";
 
   const close = (cancelled) => {
-    modal.classList.remove("modal-open");
+    modal.style.display = "none";
     if (cancelled && typeof onCancel === "function") onCancel();
   };
 
@@ -1095,6 +1436,7 @@ function meetingBelongsToUser(meeting, user) {
   if (user.role === ROLES.COUNCILOR) return meeting.councilor === user.name || meeting.createdBy === user.username;
   if (user.role === ROLES.RESEARCHER) return meeting.researcher === user.name || meeting.createdBy === user.username;
   if (user.role === ROLES.VICE_MAYOR) return meeting.createdBy === user.username;
+  if (user.role === ROLES.SECRETARY) return meeting.createdBy === user.username;
   return false;
 }
 
@@ -1128,16 +1470,22 @@ function renderMyMeetingsTable(currentUser) {
     const canRequestCancel = currentUser.role !== ROLES.ADMIN && ["Pending", "Approved"].includes(m.status);
     const noteTitle = m.adminNote ? ` title="${h(m.adminNote)}"` : "";
     const noteHint = m.adminNote ? `<div style="font-size:0.72rem;color:#6b7280;margin-top:3px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h(m.adminNote)}">Note: ${h(m.adminNote)}</div>` : "";
+    const createdAt = m.createdAt ? new Date(m.createdAt) : null;
+    const within24h = createdAt && (new Date() - createdAt) < 24 * 60 * 60 * 1000;
+    const cancelBtnLabel = within24h ? "Cancel (Free)" : "Request Cancel";
+    const cancelBtnClass = within24h ? "btn btn-sm btn-ghost cancel-btn-free" : "btn btn-sm btn-ghost";
+    const cancelReasonHint = m.cancelReason ? `<div style="font-size:0.72rem;color:#9ca3af;margin-top:2px" title="${h(m.cancelReason)}">Reason: ${h(m.cancelReason)}</div>` : "";
     return `<tr>
       <td>${h(m.eventName)}</td>
       <td>${formatDateDisplay(m.date)}</td>
       <td>${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)}</td>
       <td>${m.type || m.meetingType || "—"}</td>
-      <td${noteTitle}>${meetingStatusBadge(m.status)}${noteHint}</td>
-      <td>
+      <td${noteTitle}>${meetingStatusBadge(m.status)}${noteHint}${cancelReasonHint}</td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         ${canRequestCancel
-          ? `<button class="btn btn-sm btn-ghost" data-action="request-cancel" data-meeting-id="${m.id}">Request Cancellation</button>`
-          : `<button class="btn btn-sm btn-ghost" data-action="export-pdf" data-meeting-id="${m.id}">Export PDF</button>`}
+          ? `<button class="${cancelBtnClass}" data-action="request-cancel" data-meeting-id="${m.id}">${cancelBtnLabel}</button>`
+          : ""}
+        <button class="btn btn-sm btn-ghost" data-action="export-pdf" data-meeting-id="${m.id}">Export PDF</button>
       </td>
     </tr>`;
   }).join("");
@@ -1218,12 +1566,13 @@ function renderAdminMeetingsTable() {
           </button>
           ${printBtn}
         </div>`;
+    const cancelReasonCell = m.cancelReason ? `<div style="font-size:0.7rem;color:#9ca3af;margin-top:2px;font-style:italic" title="${h(m.cancelReason)}">Reason: ${h(m.cancelReason)}</div>` : "";
     return `<tr${isCancelRequest ? ' style="background:rgba(249,115,22,0.04)"' : ''}>
       <td>${h(m.eventName)}</td>
       <td>${formatDateDisplay(m.date)}</td>
       <td>${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)}</td>
       <td>${h(m.type || m.meetingType || "—")}</td>
-      <td>${meetingStatusBadge(m.status)}</td>
+      <td>${meetingStatusBadge(m.status)}${cancelReasonCell}</td>
       <td>${h(m.createdBy)}</td>
       <td>${actionButtons}</td>
     </tr>`;
@@ -1342,7 +1691,7 @@ function openNoteModal(title, prompt, required, onSubmit, onCancel) {
   }
 
   document.getElementById("note-modal-title").textContent = title;
-  document.getElementById("note-modal-prompt").textContent = prompt;
+  document.getElementById("note-modal-prompt").innerHTML = prompt;
   document.getElementById("note-modal-input").value = "";
   document.getElementById("note-modal-error").textContent = "";
 
@@ -1364,14 +1713,21 @@ function openNoteModal(title, prompt, required, onSubmit, onCancel) {
   modal.onclick = (e) => { if (e.target === modal) close(true); };
   document.getElementById("note-modal-close").onclick = () => close(true);
   document.getElementById("note-modal-cancel").onclick = () => close(true);
+  const submitBtn = document.getElementById("note-modal-submit");
+  submitBtn.textContent = "";
+  submitBtn.appendChild(document.createTextNode(typeof required === "string" ? required : "Confirm"));
   document.getElementById("note-modal-submit").onclick = () => {
     const note = document.getElementById("note-modal-input").value.trim();
-    if (required && !note) {
+    if (!note) {
       document.getElementById("note-modal-error").textContent = "A reason is required.";
       return;
     }
+    const validationError = onSubmit(note);
+    if (validationError) {
+      document.getElementById("note-modal-error").textContent = validationError;
+      return;
+    }
     close(false);
-    onSubmit(note);
   };
 }
 
@@ -1490,43 +1846,94 @@ function handleMyMeetingsClick(e) {
   }
 
   if (action === "request-cancel") {
-    // Disable immediately to prevent double-click
     btn.disabled = true;
     btn.dataset.processing = "1";
     const reenable = () => { btn.disabled = false; btn.dataset.processing = "0"; };
 
-    openConfirmModal(
-      "Request Cancellation",
-      `Request cancellation for <strong>${h(mtg.eventName)}</strong> on ${formatDateDisplay(mtg.date)}? The admin will review and confirm.`,
-      () => {
-        mtg.status = "Cancellation Requested";
-        persistMeetings();
-        const currentUser = getCurrentUser();
-        renderMyMeetingsTable(currentUser);
-        renderAdminMeetingsTable();
-        renderCalendar();
-        showToast("Cancellation request submitted.", "info");
+    const currentUser = getCurrentUser();
+    const createdAt = mtg.createdAt ? new Date(mtg.createdAt) : null;
+    const now = new Date();
+    const within24h = createdAt && (now - createdAt) < 24 * 60 * 60 * 1000;
 
-        // Notify all admins
-        users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
+    // Use openNoteModal to collect a cancellation reason
+    const promptHtml = within24h
+      ? `<div style="margin-bottom:10px">
+           <span style="display:inline-flex;align-items:center;gap:6px;background:#dcfce7;color:#166534;font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:999px;margin-bottom:8px">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+             Within 24-hour free cancellation window
+           </span>
+           <div style="font-size:0.87rem;color:var(--color-text)">You are cancelling <strong>${h(mtg.eventName)}</strong> on <strong>${formatDateDisplay(mtg.date)}</strong>.</div>
+           <div style="font-size:0.82rem;color:var(--color-text-muted);margin-top:4px">This will be cancelled immediately without admin approval. Please briefly state why:</div>
+         </div>`
+      : `<div style="margin-bottom:10px">
+           <span style="display:inline-flex;align-items:center;gap:6px;background:#fef3c7;color:#92400e;font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:999px;margin-bottom:8px">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+             24-hour window has passed — requires admin approval
+           </span>
+           <div style="font-size:0.87rem;color:var(--color-text)">You are requesting cancellation of <strong>${h(mtg.eventName)}</strong> on <strong>${formatDateDisplay(mtg.date)}</strong>.</div>
+           <div style="font-size:0.82rem;color:var(--color-text-muted);margin-top:4px">The admin will review your request. Please state your reason:</div>
+         </div>`;
+
+    openNoteModal(
+      within24h ? "Cancel Meeting" : "Request Cancellation",
+      promptHtml,
+      within24h ? "Cancel Meeting Now" : "Send to Admin for Review",
+      (reason) => {
+        if (!reason || !reason.trim()) return "Please provide a reason for cancellation.";
+
+        if (within24h) {
+          // Direct cancel — no admin needed
+          mtg.status = "Cancelled";
+          mtg.cancelReason = reason.trim();
+          mtg.cancelledAt = new Date().toISOString();
+          persistMeetings();
+          renderMyMeetingsTable(currentUser);
+          renderAdminMeetingsTable();
+          renderCalendar();
+          updateStatistics();
+          showToast("Meeting cancelled successfully.", "success");
+          if (window.innerWidth <= 768 && typeof _closeActive === "function") _closeActive();
+
+          // Notify admins of the self-cancellation
+          users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
+            addNotification(
+              admin.id || admin.username,
+              `<strong>${h(currentUser.name)}</strong> cancelled their meeting <strong>"${h(mtg.eventName)}"</strong> on ${formatDateDisplay(mtg.date)} (within 24h). Reason: ${h(reason.trim())}`,
+              "info",
+              "meeting-logs"
+            );
+          });
+        } else {
+          // Admin-review path
+          mtg.status = "Cancellation Requested";
+          mtg.cancelReason = reason.trim();
+          persistMeetings();
+          renderMyMeetingsTable(currentUser);
+          renderAdminMeetingsTable();
+          renderCalendar();
+          showToast("Cancellation request submitted to admin.", "info");
+          if (window.innerWidth <= 768 && typeof _closeActive === "function") _closeActive();
+
+          users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
+            addNotification(
+              admin.id || admin.username,
+              `<strong>${h(currentUser.name)}</strong> requested cancellation of <strong>"${h(mtg.eventName)}"</strong> on ${formatDateDisplay(mtg.date)}. Reason: ${h(reason.trim())}`,
+              "warning",
+              "meeting-logs"
+            );
+          });
+
           addNotification(
-            admin.id || admin.username,
-            `<strong>${h(currentUser.name)}</strong> has requested cancellation of <strong>"${h(mtg.eventName)}"</strong> scheduled on ${formatDateDisplay(mtg.date)}. Please review and take action.`,
-            "warning",
-            "meeting-logs"
+            currentUser.id || currentUser.username,
+            `Your cancellation request for <strong>"${h(mtg.eventName)}"</strong> on ${formatDateDisplay(mtg.date)} has been submitted and is pending admin review.`,
+            "info",
+            "my-meetings"
           );
-        });
-
-        // Confirm back to the requesting user
-        addNotification(
-          currentUser.id || currentUser.username,
-          `Your cancellation request for <strong>"${h(mtg.eventName)}"</strong> on ${formatDateDisplay(mtg.date)} has been submitted and is pending admin review.`,
-          "info",
-          "my-meetings"
-        );
-        updateNotificationBadge(currentUser.id || currentUser.username);
+          updateNotificationBadge(currentUser.id || currentUser.username);
+        }
+        return null; // no error
       },
-      reenable   // re-enable button if user cancels the confirm dialog
+      reenable
     );
   }
 }
@@ -1719,7 +2126,7 @@ function renderCalendar() {
 
     // ── Interactivity ──
     const canInteract = currentUser &&
-      [ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR].includes(currentUser.role);
+      [ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR, ROLES.SECRETARY].includes(currentUser.role);
 
     if (isPast || isHoliday || !isWorkday) {
       cell.classList.add("calendar-cell-muted");
@@ -1749,7 +2156,7 @@ function renderCalendar() {
 function openDayScheduleModal(isoDate, readOnly) {
   const currentUser = getCurrentUser();
   const canBook = !readOnly && currentUser &&
-    [ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR].includes(currentUser.role);
+    [ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR, ROLES.SECRETARY].includes(currentUser.role);
 
   if (window.innerWidth <= 768) { openDayDrawer(isoDate, canBook); return; }
 
@@ -1952,9 +2359,90 @@ function buildTimelineHTML(isoDate, dayMeetings) {
 
 // populateTimeOptions defined above with conflict-aware logic
 
+// ---------------------------------------------------------------------------
+// Smart Councilor / Researcher field setup
+// Admin → both show as dropdowns (lists registered accounts + N/A option)
+// Councilor → councilor field is auto-filled & locked; researcher is dropdown
+// Researcher → researcher field is auto-filled & locked; councilor is dropdown
+// Vice Mayor / Secretary → both show as dropdowns
+// ---------------------------------------------------------------------------
+function _setupCouncilorResearcherFields(currentUser) {
+  const cSelect = $("#meeting-councilor-select");
+  const rSelect = $("#meeting-researcher-select");
+  const cInput  = $("#meeting-councilor");
+  const rInput  = $("#meeting-researcher");
+  if (!cSelect || !rSelect || !cInput || !rInput) return;
+
+  const isAdmin = currentUser.role === ROLES.ADMIN;
+  const isCouncilor  = currentUser.role === ROLES.COUNCILOR;
+  const isResearcher = currentUser.role === ROLES.RESEARCHER;
+
+  // Gather registered users
+  const councilors = users.filter(u => u.role === ROLES.COUNCILOR || u.role === ROLES.VICE_MAYOR);
+  const researchers = users.filter(u => u.role === ROLES.RESEARCHER);
+
+  // Helper: rebuild a <select> with given user list + N/A
+  function fillSelect(sel, userList, placeholder) {
+    // Keep first two options (placeholder + N/A)
+    while (sel.options.length > 2) sel.remove(2);
+    userList.forEach(u => {
+      const opt = document.createElement("option");
+      opt.value = u.name || u.username;
+      opt.textContent = `${u.name || u.username} (${u.role})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  fillSelect(cSelect, councilors, "— Select Councilor —");
+  fillSelect(rSelect, researchers, "— Select Researcher —");
+
+  // Reset visibility
+  cSelect.style.display = "none"; cInput.style.display = "";
+  rSelect.style.display = "none"; rInput.style.display = "";
+  cInput.readOnly = false; rInput.readOnly = false;
+  cInput.required = false; rInput.required = false;  // never put required on potentially-hidden inputs
+  cSelect.required = false; rSelect.required = false;
+  cInput.value = ""; rInput.value = "";
+  cSelect.value = ""; rSelect.value = "";
+
+  if (isCouncilor) {
+    // Councilor: lock own name in councilor input, show researcher dropdown
+    cInput.value = currentUser.name;
+    cInput.readOnly = true;
+    rInput.style.display = "none";
+    rSelect.style.display = "";
+    rSelect.value = "";
+  } else if (isResearcher) {
+    // Researcher: lock own name in researcher input, show councilor dropdown
+    rInput.value = currentUser.name;
+    rInput.readOnly = true;
+    cInput.style.display = "none";
+    cSelect.style.display = "";
+    cSelect.value = "";
+  } else {
+    // Admin / Vice Mayor / Secretary: both as dropdowns
+    cInput.style.display = "none"; cSelect.style.display = "";
+    rInput.style.display = "none"; rSelect.style.display = "";
+  }
+}
+
+// Read the effective councilor/researcher values from either select or input
+function _getCouncilorValue() {
+  const sel = $("#meeting-councilor-select");
+  const inp = $("#meeting-councilor");
+  if (sel && sel.style.display !== "none") return sel.value === "N/A" ? "N/A" : sel.value;
+  return inp ? inp.value.trim() : "";
+}
+function _getResearcherValue() {
+  const sel = $("#meeting-researcher-select");
+  const inp = $("#meeting-researcher");
+  if (sel && sel.style.display !== "none") return sel.value === "N/A" ? "N/A" : sel.value;
+  return inp ? inp.value.trim() : "";
+}
+
 function openMeetingModal(isoDate) {
   const currentUser = getCurrentUser();
-  if (!currentUser || ![ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR].includes(currentUser.role)) {
+  if (!currentUser || ![ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR, ROLES.SECRETARY].includes(currentUser.role)) {
     showToast("Only authorized roles may book meetings.", "warning");
     return;
   }
@@ -1976,14 +2464,8 @@ function openMeetingModal(isoDate) {
     dateInput.value = todayISO;
   }
 
-  if (currentUser.role === ROLES.COUNCILOR) {
-    const c = $("#meeting-councilor");
-    if (c) { c.value = currentUser.name; c.readOnly = true; }
-  }
-  if (currentUser.role === ROLES.RESEARCHER) {
-    const r = $("#meeting-researcher");
-    if (r) { r.value = currentUser.name; r.readOnly = true; }
-  }
+  // ── Smart Councilor / Researcher fields ───────────────────────────────
+  _setupCouncilorResearcherFields(currentUser);
 
   // Reset other/venue inputs
   const typeOther = $("#meeting-type-other");
@@ -2016,28 +2498,170 @@ function closeMeetingModal() {
   if (backdrop) backdrop.classList.remove("modal-open");
 }
 
+// ---------------------------------------------------------------------------
+// Policy modal state — holds pending meeting data while user reads policies
+// ---------------------------------------------------------------------------
+let _pendingMeetingData = null;
+
+function openPolicyModal(meetingData) {
+  _pendingMeetingData = meetingData;
+  // Fill summary
+  const summary = document.getElementById("policy-meeting-summary");
+  if (summary) {
+    summary.innerHTML = `
+      <div class="policy-summary-grid">
+        <div class="policy-summary-item">
+          <div class="policy-summary-label">Event</div>
+          <div class="policy-summary-val">${h(meetingData.eventName)}</div>
+        </div>
+        <div class="policy-summary-item">
+          <div class="policy-summary-label">Date</div>
+          <div class="policy-summary-val">${formatDateDisplay(meetingData.date)}</div>
+        </div>
+        <div class="policy-summary-item">
+          <div class="policy-summary-label">Time</div>
+          <div class="policy-summary-val">${formatTimeRange(meetingData.timeStart, meetingData.durationHours)}</div>
+        </div>
+        <div class="policy-summary-item">
+          <div class="policy-summary-label">Type</div>
+          <div class="policy-summary-val">${h(meetingData.type)}</div>
+        </div>
+      </div>`;
+  }
+  // Reset checkbox
+  const chk = document.getElementById("policy-agree-check");
+  if (chk) chk.checked = false;
+  const err = document.getElementById("policy-agree-error");
+  if (err) err.textContent = "";
+  // Open
+  const backdrop = document.getElementById("policy-modal");
+  if (backdrop) backdrop.classList.add("modal-open");
+}
+
+function closePolicyModal() {
+  const backdrop = document.getElementById("policy-modal");
+  if (backdrop) backdrop.classList.remove("modal-open");
+}
+
+function submitMeetingFromPolicy() {
+  const chk = document.getElementById("policy-agree-check");
+  const err = document.getElementById("policy-agree-error");
+  if (!chk || !chk.checked) {
+    if (err) err.textContent = "Please check the box to agree before submitting.";
+    const lbl = document.getElementById("policy-agree-label");
+    if (lbl) { lbl.style.animation = "none"; lbl.offsetWidth; lbl.style.animation = "policy-shake 0.35s ease"; }
+    return;
+  }
+  if (err) err.textContent = "";
+  closePolicyModal();
+
+  const d = _pendingMeetingData;
+  if (!d) return;
+  _pendingMeetingData = null;
+
+  const currentUser = getCurrentUser();
+  if (!currentUser) return;
+
+  const meeting = {
+    id: `mtg_${Math.random().toString(36).slice(2, 9)}`,
+    eventName: d.eventName,
+    committee: d.committee,
+    venue: d.venue,
+    councilor: d.councilor,
+    researcher: d.researcher,
+    stakeholders: d.stakeholders,
+    notes: d.notes,
+    date: d.date,
+    timeStart: d.timeStart,
+    durationHours: d.durationHours,
+    type: d.type,
+    status: currentUser.role === ROLES.ADMIN ? "Approved" : "Pending",
+    createdBy: currentUser.username,
+    createdByRole: currentUser.role,
+    createdAt: new Date().toISOString(),
+  };
+
+  if (window.api && window.api.addMeeting) {
+    window.api.addMeeting(meeting).then(() => {});
+  } else {
+    meetings.push(meeting);
+    persistMeetings();
+  }
+
+  // Notify all admins
+  // Only notify admins if a non-admin submitted the request
+  if (currentUser.role !== ROLES.ADMIN) {
+    users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
+      addNotification(
+        admin.id || admin.username,
+        `New meeting request from <strong>${currentUser.name}</strong>: <strong>"${d.eventName}"</strong> on ${formatDateDisplay(d.date)} at ${formatTimeRange(d.timeStart, d.durationHours)}. Review and take action.`,
+        "info",
+        "meeting-logs"
+      );
+    });
+  }
+
+  // If admin created this meeting, notify the assigned councilor and/or researcher
+  if (currentUser.role === ROLES.ADMIN) {
+    const dateStr = formatDateDisplay(d.date);
+    const timeStr = formatTimeRange(d.timeStart, d.durationHours);
+    if (d.councilor && d.councilor !== "N/A") {
+      const cUser = users.find(u => u.name === d.councilor);
+      if (cUser) {
+        addNotification(
+          cUser.id || cUser.username,
+          `The Admin has scheduled a meeting on your behalf: <strong>"${d.eventName}"</strong> on ${dateStr} at ${timeStr}. Venue: ${d.venue}. Status: <strong>Approved</strong>.`,
+          "success",
+          "my-meetings"
+        );
+      }
+    }
+    if (d.researcher && d.researcher !== "N/A") {
+      const rUser = users.find(u => u.name === d.researcher);
+      if (rUser) {
+        addNotification(
+          rUser.id || rUser.username,
+          `The Admin has scheduled a meeting on your behalf: <strong>"${d.eventName}"</strong> on ${dateStr} at ${timeStr}. Venue: ${d.venue}. Status: <strong>Approved</strong>.`,
+          "success",
+          "my-meetings"
+        );
+      }
+    }
+  }
+
+  const toastMsg = currentUser.role === ROLES.ADMIN
+    ? "Meeting scheduled and automatically approved."
+    : "Meeting request submitted successfully.";
+  showToast(toastMsg, "success");
+  renderCalendar();
+  renderMyMeetingsTable(currentUser);
+  renderAdminMeetingsTable();
+  updateStatistics();
+}
+
 function handleMeetingSubmit(e) {
   e.preventDefault();
   const msg = $("#meeting-form-message");
   const currentUser = getCurrentUser();
   if (!currentUser) return;
 
-  const eventName = $("#meeting-event").value.trim();
-  const committee = $("#meeting-committee").value.trim();
-  const councilor = $("#meeting-councilor").value.trim();
-  const researcher = $("#meeting-researcher").value.trim();
-  const notes = $("#meeting-notes").value.trim();
-  const isoDate = $("#meeting-date").value;
-  const timeStart = $("#meeting-time").value;
-  const durationEl = $("#meeting-duration");
+  const eventName   = $("#meeting-event")?.value.trim() || "";
+  const committee   = $("#meeting-committee")?.value.trim() || "";
+  const councilor   = _getCouncilorValue();
+  const researcher  = _getResearcherValue();
+  const stakeholders = $("#meeting-stakeholders")?.value.trim() || "";
+  const notes       = $("#meeting-notes")?.value.trim() || "";
+  const isoDate     = $("#meeting-date")?.value || "";
+  const timeStart   = $("#meeting-time")?.value || "";
+  const durationEl  = $("#meeting-duration");
   const durationHours = durationEl ? parseInt(durationEl.value || "3", 10) : SLOT_DURATION_HOURS;
 
-  const typeRaw = $("#meeting-type")?.value || "";
+  const typeRaw   = $("#meeting-type")?.value || "";
   const typeOther = $("#meeting-type-other")?.value.trim() || "";
-  const venueRaw = $("#meeting-venue")?.value || "";
+  const venueRaw  = $("#meeting-venue")?.value || "";
   const venueOther = $("#meeting-venue-other")?.value.trim() || "";
 
-  let type = typeRaw || "Regular Session";
+  let type = typeRaw || "Committee Meeting";
   if (typeRaw === "Others") {
     if (!typeOther) { msg.textContent = "Please specify the type of meeting."; showToast("Please specify meeting type.", "error"); return; }
     type = typeOther;
@@ -2049,9 +2673,24 @@ function handleMeetingSubmit(e) {
     venue = venueOther;
   }
 
-  if (!eventName || !committee || !venue || !councilor || !researcher) {
+  if (!eventName || !committee || !venue) {
     msg.textContent = "Please complete all required fields (*).";
     showToast("Please complete all required fields.", "error");
+    return;
+  }
+  if (!councilor) {
+    msg.textContent = "Please select a Councilor or choose N/A.";
+    showToast("Please select a Councilor or choose N/A.", "error");
+    return;
+  }
+  if (!researcher) {
+    msg.textContent = "Please select a Researcher or choose N/A.";
+    showToast("Please select a Researcher or choose N/A.", "error");
+    return;
+  }
+  if (councilor === "N/A" && researcher === "N/A") {
+    msg.textContent = "Councilor and Researcher cannot both be N/A.";
+    showToast("At least one of Councilor or Researcher is required.", "error");
     return;
   }
   if (!isoDate || !timeStart) { msg.textContent = "Date and start time are required."; showToast("Date and start time are required.", "error"); return; }
@@ -2065,7 +2704,7 @@ function handleMeetingSubmit(e) {
   if (isHolidayISO(isoDate)) { msg.textContent = "Selected date is a Philippine holiday."; showToast("Selected date is a Philippine holiday.", "error"); return; }
 
   const startMinutes = minutesFromTimeStr(timeStart);
-  const endMinutes = startMinutes + durationHours * 60;
+  const endMinutes   = startMinutes + durationHours * 60;
   if (startMinutes < WORK_START_HOUR * 60 || endMinutes > WORK_END_HOUR * 60) {
     msg.textContent = "Meeting must be within office hours (8:00 AM – 5:00 PM).";
     showToast("Meeting must be within office hours.", "error");
@@ -2079,10 +2718,9 @@ function handleMeetingSubmit(e) {
     return startMinutes < e2 && endMinutes > s;
   });
   if (conflictingApproved) {
-    const conflictTime = formatTimeRange(conflictingApproved.timeStart, conflictingApproved.durationHours || SLOT_DURATION_HOURS);
-    msg.textContent = `This time overlaps with an approved meeting: "${conflictingApproved.eventName}" (${conflictTime}). Please choose a different time slot.`;
-    showToast("Conflict with approved meeting — choose another slot.", "error");
-    // Refresh time options to show the conflict
+    const ct = formatTimeRange(conflictingApproved.timeStart, conflictingApproved.durationHours || SLOT_DURATION_HOURS);
+    msg.textContent = `Time overlaps with approved meeting: "${conflictingApproved.eventName}" (${ct}). Please choose another slot.`;
+    showToast("Conflict with approved meeting.", "error");
     populateTimeOptions(isoDate);
     return;
   }
@@ -2094,82 +2732,87 @@ function handleMeetingSubmit(e) {
     return startMinutes < e2 && endMinutes > s;
   });
   if (conflictingPending) {
-    showToast(`Note: "${conflictingPending.eventName}" is also pending for this time. If both are approved, yours may be auto-cancelled.`, "warning");
+    showToast(`Note: "${conflictingPending.eventName}" is also pending for this time. If both approved, yours may be auto-cancelled.`, "warning");
   }
 
-  // Confirmation step before submitting
+  // All validation passed — close meeting form, open Policy modal
+  msg.textContent = "";
   closeMeetingModal();
-  openConfirmModal(
-    "Confirm Meeting Request",
-    `<div style="font-size:0.88rem;color:var(--color-text-muted);margin-bottom:12px;line-height:1.5">Please review the details below before submitting.</div>
-     <div style="background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:10px;overflow:hidden">
-       <div style="padding:12px 14px;border-bottom:1px solid var(--color-border)">
-         <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:3px">Event</div>
-         <div style="font-weight:700;font-size:0.95rem;color:var(--color-text)">${h(eventName)}</div>
-       </div>
-       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border);border-right:1px solid var(--color-border)">
-           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Date</div>
-           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${formatDateDisplay(isoDate)}</div>
-         </div>
-         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border)">
-           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Time</div>
-           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${formatTimeRange(timeStart, durationHours)}</div>
-         </div>
-         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border);border-right:1px solid var(--color-border)">
-           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Venue</div>
-           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${h(venue) || "—"}</div>
-         </div>
-         <div style="padding:10px 14px;border-bottom:1px solid var(--color-border)">
-           <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:2px">Type</div>
-           <div style="font-size:0.84rem;font-weight:600;color:var(--color-text)">${h(type) || "—"}</div>
-         </div>
-       </div>
-       <div style="padding:10px 14px;background:var(--color-primary-soft);display:flex;align-items:center;gap:8px">
-         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--brand-blue)" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
-         <span style="font-size:0.78rem;color:var(--brand-blue);font-weight:500">Submit this meeting request?</span>
-       </div>
-     </div>`,
-    () => {
-      const meeting = {
-        id: `mtg_${Math.random().toString(36).slice(2, 9)}`,
-        eventName, committee, venue, councilor, researcher, notes,
-        date: isoDate, timeStart, durationHours, type,
-        status: "Pending",
-        createdBy: currentUser.username,
-        createdByRole: currentUser.role,
-        createdAt: new Date().toISOString(),
-      };
-
-      if (window.api && window.api.addMeeting) {
-        window.api.addMeeting(meeting).then(() => {});
-      } else {
-        meetings.push(meeting);
-        persistMeetings();
-      }
-
-      // Notify all admins of new request
-      users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
-        addNotification(
-          admin.id || admin.username,
-          `New meeting request from <strong>${currentUser.name}</strong>: <strong>"${eventName}"</strong> on ${formatDateDisplay(isoDate)} at ${formatTimeRange(timeStart, durationHours)}. Review and take action.`,
-          "info",
-          "meeting-logs"
-        );
-      });
-
-      showToast("Meeting request submitted.", "success");
-      renderCalendar();
-      renderMyMeetingsTable(currentUser);
-      renderAdminMeetingsTable();
-      updateStatistics();
-    }
-  );
+  openPolicyModal({ eventName, committee, venue, councilor, researcher, stakeholders, notes, date: isoDate, timeStart, durationHours, type });
 }
+
 
 // ---------------------------------------------------------------------------
 // Statistics
 // ---------------------------------------------------------------------------
+
+function animateCounter(el, target) {
+  if (!el) return;
+  const current = parseInt(el.textContent) || 0;
+  if (current === target) { el.textContent = target; return; }
+  const duration = 600;
+  const start = performance.now();
+  const from = current;
+  function step(now) {
+    const t = Math.min((now - start) / duration, 1);
+    const ease = 1 - Math.pow(1 - t, 3);
+    el.textContent = Math.round(from + (target - from) * ease);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function updateDashboardGreeting() {
+  const greetEl = $("#dash-greeting");
+  const dateEl = $("#dash-date-str");
+  const nameEl = $("#dash-admin-name");
+  const cu = getCurrentUser();
+  if (nameEl && cu) nameEl.textContent = cu.name || "Administrator";
+  if (greetEl) {
+    const h = new Date().getHours();
+    greetEl.textContent = h < 12 ? "Good morning," : h < 17 ? "Good afternoon," : "Good evening,";
+  }
+  if (dateEl) {
+    dateEl.textContent = new Date().toLocaleDateString("en-PH", { weekday:"long", year:"numeric", month:"long", day:"numeric" });
+  }
+}
+
+function renderUpcomingMeetingsPreview() {
+  const el = $("#upcoming-meetings-preview");
+  if (!el) return;
+  const now = new Date();
+  const in14 = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+  const upcoming = meetings
+    .filter(m => m.status === "Approved" && new Date(m.date + "T00:00:00") >= now && new Date(m.date + "T00:00:00") <= in14)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 5);
+
+  if (!upcoming.length) {
+    el.innerHTML = `<div style="text-align:center;padding:20px 0;color:var(--color-text-muted);font-size:0.84rem">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto 8px;opacity:.35"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      No approved meetings in the next 14 days.
+    </div>`;
+    return;
+  }
+
+  const STATUS_COLORS = { "Approved": "#16a34a" };
+  el.innerHTML = upcoming.map(m => {
+    const dateStr = new Date(m.date + "T00:00:00").toLocaleDateString("en-PH", { weekday:"short", month:"short", day:"numeric" });
+    const timeStr = m.timeStart ? formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS) : "—";
+    const daysLeft = Math.ceil((new Date(m.date + "T00:00:00") - now) / (1000 * 60 * 60 * 24));
+    const daysTag = daysLeft === 0 ? "Today" : daysLeft === 1 ? "Tomorrow" : `In ${daysLeft}d`;
+    return `<div class="upcoming-preview-item">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        <div style="width:4px;height:40px;border-radius:3px;background:#16a34a;flex-shrink:0"></div>
+        <div style="min-width:0">
+          <div class="upcoming-preview-name">${h(m.eventName)}</div>
+          <div class="upcoming-preview-meta">${dateStr} · ${timeStr}${m.venue ? ` · ${h(m.venue)}` : ""}</div>
+        </div>
+      </div>
+      <span style="font-size:0.7rem;font-weight:700;background:${daysLeft <= 1 ? '#fee2e2' : '#dcfce7'};color:${daysLeft <= 1 ? '#991b1b' : '#166534'};padding:3px 9px;border-radius:999px;white-space:nowrap;flex-shrink:0">${daysTag}</span>
+    </div>`;
+  }).join("");
+}
 
 function updateStatistics() {
   const totalEl = $("#stat-total-meetings");
@@ -2184,10 +2827,29 @@ function updateStatistics() {
   const in7 = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const upcoming = meetings.filter(m => { const d = new Date(m.date); return d >= now && d <= in7; }).length;
 
-  if (totalEl) totalEl.textContent = total;
-  if (pendingEl) pendingEl.textContent = pending;
-  if (activeUsersEl) activeUsersEl.textContent = activeUsers;
-  if (upcomingEl) upcomingEl.textContent = upcoming;
+  animateCounter(totalEl, total);
+  animateCounter(pendingEl, pending);
+  animateCounter(activeUsersEl, activeUsers);
+  animateCounter(upcomingEl, upcoming);
+
+  // Pending CTA — show "Review now" if there are pending items
+  const cta = $("#stat-pending-cta");
+  const none = $("#stat-pending-none");
+  const pendingCard = $("#stat-pending-card");
+  if (cta && none) {
+    if (pending > 0) {
+      cta.style.display = "inline";
+      none.style.display = "none";
+      if (pendingCard) pendingCard.classList.add("dash-stat-card-has-alert");
+    } else {
+      cta.style.display = "none";
+      none.style.display = "inline";
+      if (pendingCard) pendingCard.classList.remove("dash-stat-card-has-alert");
+    }
+  }
+
+  updateDashboardGreeting();
+  renderUpcomingMeetingsPreview();
 
   // Update notification badge for current user
   const cu = getCurrentUser();
@@ -2340,7 +3002,9 @@ async function initAdminPage() {
   wireArchiveModal();
 
   $("#user-form")?.addEventListener("submit", handleUserFormSubmit);
+  $("#special-account-form")?.addEventListener("submit", handleSpecialAccountFormSubmit);
   $("#user-table-body")?.addEventListener("click", handleUserTableClick);
+  $("#special-accounts-table-body")?.addEventListener("click", handleUserTableClick);
   $("#password-form")?.addEventListener("submit", handlePasswordSubmit);
   $("#password-cancel-btn")?.addEventListener("click", closePasswordModal);
   $("#password-modal-close")?.addEventListener("click", closePasswordModal);
@@ -2356,10 +3020,15 @@ async function initAdminPage() {
   $("#filter-type-admin")?.addEventListener("change", () => { adminMeetingsPage = 1; renderAdminMeetingsTable(); });
   $("#filter-status-admin")?.addEventListener("change", () => { adminMeetingsPage = 1; renderAdminMeetingsTable(); });
 
+  $("#btn-export-csv")?.addEventListener("click", exportMeetingsCSV);
+  $("#btn-print-table")?.addEventListener("click", printMeetingsTable);
+
   $("#admin-meetings-body")?.addEventListener("click", handleAdminMeetingsClick);
   $("#meeting-form")?.addEventListener("submit", handleMeetingSubmit);
   $("#meeting-cancel-btn")?.addEventListener("click", closeMeetingModal);
   $("#meeting-modal-close")?.addEventListener("click", closeMeetingModal);
+  $("#policy-modal-back")?.addEventListener("click", () => { closePolicyModal(); const b = $("#meeting-modal"); if (b) b.classList.add("modal-open"); });
+  $("#policy-modal-confirm")?.addEventListener("click", submitMeetingFromPolicy);
   $("#calendar-prev")?.addEventListener("click", () => changeCalendarMonth(-1));
   $("#calendar-next")?.addEventListener("click", () => changeCalendarMonth(1));
   $("#calendar-today")?.addEventListener("click", jumpToToday);
@@ -2372,6 +3041,11 @@ async function initAdminPage() {
   renderUsersTable();
   renderAdminMeetingsTable();
   updateStatistics();
+  initAdminAnnouncements();
+
+  // Password strength meters
+  initPwdStrength("user-password",    "user-pwd-strength",    "user-pwd-fill",    "user-pwd-label");
+  initPwdStrength("special-password", "special-pwd-strength", "special-pwd-fill", "special-pwd-label");
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,6 +3089,8 @@ async function initUserPage() {
   $("#meeting-form")?.addEventListener("submit", handleMeetingSubmit);
   $("#meeting-cancel-btn")?.addEventListener("click", closeMeetingModal);
   $("#meeting-modal-close")?.addEventListener("click", closeMeetingModal);
+  $("#policy-modal-back")?.addEventListener("click", () => { closePolicyModal(); const b = $("#meeting-modal"); if (b) b.classList.add("modal-open"); });
+  $("#policy-modal-confirm")?.addEventListener("click", submitMeetingFromPolicy);
   $("#my-meetings-body")?.addEventListener("click", handleMyMeetingsClick);
   $("#calendar-prev")?.addEventListener("click", () => changeCalendarMonth(-1));
   $("#calendar-next")?.addEventListener("click", () => changeCalendarMonth(1));
@@ -2428,6 +3104,7 @@ async function initUserPage() {
   initCalendarDate();
   renderMyMeetingsTable(user);
   updateStatistics();
+  initUserAnnouncements();
 }
 
 // ---------------------------------------------------------------------------
@@ -2509,6 +3186,318 @@ function wireArchiveModal() {
 }
 
 // ---------------------------------------------------------------------------
+// FEATURE: Password Strength Meter
+// ---------------------------------------------------------------------------
+
+function scorePassword(pw) {
+  if (!pw) return { score: 0, label: "", level: "" };
+  let score = 0;
+  if (pw.length >= 6)  score++;
+  if (pw.length >= 10) score++;
+  if (/[A-Z]/.test(pw)) score++;
+  if (/[0-9]/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  if (score <= 1) return { score: 1, label: "Weak",   level: "weak" };
+  if (score <= 3) return { score: 3, label: "Medium", level: "medium" };
+  return              { score: 5, label: "Strong", level: "strong" };
+}
+
+function initPwdStrength(inputId, wrapId, fillId, labelId) {
+  const inp  = document.getElementById(inputId);
+  const wrap = document.getElementById(wrapId);
+  const fill = document.getElementById(fillId);
+  const lbl  = document.getElementById(labelId);
+  if (!inp || !wrap || !fill || !lbl) return;
+  inp.addEventListener("input", () => {
+    const val = inp.value;
+    if (!val) { wrap.style.display = "none"; return; }
+    wrap.style.display = "flex";
+    const { score, label, level } = scorePassword(val);
+    fill.style.width = `${(score / 5) * 100}%`;
+    fill.className = `pwd-strength-fill pwd-strength-${level}`;
+    lbl.textContent = label;
+    lbl.className = `pwd-strength-label pwd-strength-label-${level}`;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// FEATURE: Export Meetings to CSV
+// ---------------------------------------------------------------------------
+
+function getFilteredMeetingsList() {
+  const filterType   = $("#filter-type-admin")?.value   || "all";
+  const filterStatus = $("#filter-status-admin")?.value || "all";
+  let list = [...meetings];
+  if (filterType   !== "all") list = list.filter(m => (m.type || m.meetingType) === filterType);
+  if (filterStatus !== "all") list = list.filter(m => m.status === filterStatus);
+  if (adminMeetingsSearch) {
+    const q = adminMeetingsSearch.toLowerCase();
+    list = list.filter(m =>
+      (m.eventName  || "").toLowerCase().includes(q) ||
+      (m.createdBy  || "").toLowerCase().includes(q) ||
+      (m.councilor  || "").toLowerCase().includes(q) ||
+      (m.venue      || "").toLowerCase().includes(q)
+    );
+  }
+  list.sort((a, b) => (a.date + a.timeStart).localeCompare(b.date + b.timeStart));
+  return list;
+}
+
+function csvEscape(val) {
+  const s = String(val ?? "").replace(/"/g, '""');
+  return /[",\n]/.test(s) ? `"${s}"` : s;
+}
+
+function exportMeetingsCSV() {
+  const list = getFilteredMeetingsList();
+  const headers = ["Event Name","Date","Time","Type","Status","Requested By","Venue","Committee","Councilor","Researcher","Notes"];
+  const rows = list.map(m => [
+    m.eventName   || "",
+    formatDateDisplay(m.date),
+    formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS),
+    m.type || m.meetingType || "",
+    m.status      || "",
+    m.createdBy   || "",
+    m.venue       || "",
+    m.committee   || "",
+    m.councilor   || "",
+    m.researcher  || "",
+    m.notes       || "",
+  ].map(csvEscape).join(","));
+
+  const csv  = [headers.join(","), ...rows].join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  const now  = new Date();
+  a.href     = url;
+  a.download = `sbp_meetings_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${list.length} meeting${list.length !== 1 ? "s" : ""} to CSV.`, "success");
+}
+
+// ---------------------------------------------------------------------------
+// FEATURE: Print Meetings Table
+// ---------------------------------------------------------------------------
+
+function printMeetingsTable() {
+  const list = getFilteredMeetingsList();
+  const filterType   = $("#filter-type-admin")?.value   || "all";
+  const filterStatus = $("#filter-status-admin")?.value || "all";
+
+  const filterLabel = [
+    filterType   !== "all" ? `Type: ${filterType}`     : "",
+    filterStatus !== "all" ? `Status: ${filterStatus}` : "",
+    adminMeetingsSearch    ? `Search: "${adminMeetingsSearch}"` : "",
+  ].filter(Boolean).join("  ·  ") || "All Records";
+
+  const rows = list.map(m => `
+    <tr>
+      <td>${h(m.eventName)}</td>
+      <td>${formatDateDisplay(m.date)}</td>
+      <td>${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)}</td>
+      <td>${h(m.type || m.meetingType || "—")}</td>
+      <td class="status-${(m.status||"").toLowerCase().replace(/\s+/g,"-")}">${h(m.status)}</td>
+      <td>${h(m.createdBy)}</td>
+      <td>${h(m.venue || "—")}</td>
+    </tr>`).join("");
+
+  const win = window.open("", "_blank", "width=960,height=700");
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>SB Polangui — Meeting Requests</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#1e293b;padding:24px}
+    .print-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;padding-bottom:14px;border-bottom:2px solid #1b4b8a}
+    .print-logo{font-size:17px;font-weight:800;color:#1b4b8a;letter-spacing:-0.3px}
+    .print-logo span{display:block;font-size:11px;font-weight:500;color:#64748b;margin-top:2px}
+    .print-meta{text-align:right;font-size:10.5px;color:#64748b}
+    .print-meta strong{display:block;font-size:12px;color:#1e293b;margin-bottom:2px}
+    h2{font-size:14px;font-weight:700;margin-bottom:4px;color:#1e293b}
+    .filter-label{font-size:10.5px;color:#64748b;margin-bottom:14px}
+    table{width:100%;border-collapse:collapse;font-size:11px}
+    thead tr{background:#1b4b8a;color:#fff}
+    th{padding:8px 10px;text-align:left;font-weight:600;font-size:10.5px;letter-spacing:0.03em;text-transform:uppercase}
+    td{padding:7px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top}
+    tr:nth-child(even) td{background:#f8fafc}
+    .status-pending{color:#d97706;font-weight:600}
+    .status-approved{color:#16a34a;font-weight:600}
+    .status-rejected,.status-cancelled{color:#dc2626;font-weight:600}
+    .status-done{color:#1b4b8a;font-weight:600}
+    .status-cancellation-requested{color:#ea580c;font-weight:600}
+    .print-footer{margin-top:16px;font-size:10px;color:#94a3b8;text-align:center;padding-top:8px;border-top:1px solid #e2e8f0}
+    .count-badge{display:inline-block;background:#dbeafe;color:#1e40af;font-weight:700;padding:2px 8px;border-radius:999px;font-size:10px;margin-left:8px}
+    @media print{body{padding:12px}button{display:none}}
+  </style>
+  </head><body>
+  <div class="print-header">
+    <div>
+      <div class="print-logo">SB Polangui Legislative System<span>Sangguniang Bayan ng Polangui</span></div>
+    </div>
+    <div class="print-meta">
+      <strong>All Meeting Requests</strong>
+      Printed: ${new Date().toLocaleString("en-PH",{dateStyle:"medium",timeStyle:"short"})}
+    </div>
+  </div>
+  <h2>Meeting Requests <span class="count-badge">${list.length} record${list.length !== 1 ? "s" : ""}</span></h2>
+  <div class="filter-label">Filter: ${filterLabel}</div>
+  <table>
+    <thead><tr>
+      <th>Event Name</th><th>Date</th><th>Time</th><th>Type</th><th>Status</th><th>Requested By</th><th>Venue</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="7" style="text-align:center;padding:20px;color:#94a3b8">No records found.</td></tr>'}</tbody>
+  </table>
+  <div class="print-footer">SB Polangui Legislative Scheduling &amp; Monitoring System · Confidential</div>
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
+// ---------------------------------------------------------------------------
+// FEATURE: User Detail Drawer
+// ---------------------------------------------------------------------------
+
+function openUserDrawer(userId) {
+  const user = users.find(u => u.id === userId);
+  if (!user) return;
+
+  const old = document.getElementById("user-detail-drawer");
+  if (old) old.remove();
+  const oldBd = document.getElementById("user-drawer-backdrop");
+  if (oldBd) oldBd.remove();
+
+  const userMeetings = (typeof meetings !== "undefined" && Array.isArray(meetings))
+    ? meetings.filter(m => m.createdBy === user.username || m.createdBy === user.id)
+               .sort((a, b) => b.date.localeCompare(a.date))
+    : [];
+
+  const stats = {
+    total:     userMeetings.length,
+    approved:  userMeetings.filter(m => m.status === "Approved").length,
+    pending:   userMeetings.filter(m => m.status === "Pending").length,
+    done:      userMeetings.filter(m => m.status === "Done").length,
+    cancelled: userMeetings.filter(m => ["Cancelled","Rejected"].includes(m.status)).length,
+  };
+
+  const meetingRows = userMeetings.length
+    ? userMeetings.slice(0, 50).map(m => `
+      <div class="udr-meeting-row">
+        <div class="udr-meeting-main">
+          <div class="udr-meeting-name">${h(m.eventName)}</div>
+          <div class="udr-meeting-meta">${formatDateDisplay(m.date)} &nbsp;·&nbsp; ${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)} &nbsp;·&nbsp; ${h(m.type || m.meetingType || "—")}</div>
+        </div>
+        <span class="udr-status-badge udr-status-${(m.status||"").toLowerCase().replace(/\s+/g,"-")}">${h(m.status)}</span>
+      </div>`).join("")
+    : `<div style="text-align:center;padding:32px 0;color:var(--color-text-muted);font-size:0.85rem">No meetings submitted yet.</div>`;
+
+  const initials = (user.name || user.username).split(" ").map(w=>w[0]).slice(0,2).join("").toUpperCase();
+
+  // Backdrop
+  const backdrop = document.createElement("div");
+  backdrop.id = "user-drawer-backdrop";
+  backdrop.style.cssText = "position:fixed;inset:0;z-index:3999;background:rgba(7,15,34,0.45);backdrop-filter:blur(2px);animation:fadeInBg 0.2s ease both";
+  backdrop.addEventListener("click", closeUserDrawer);
+
+  // Drawer
+  const drawer = document.createElement("div");
+  drawer.id = "user-detail-drawer";
+  drawer.innerHTML = `
+    <style>
+      @keyframes slideInDrawer { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+      #user-detail-drawer {
+        position:fixed;top:0;right:0;bottom:0;z-index:4000;
+        width:min(420px,100vw);
+        background:var(--color-surface);
+        border-left:1px solid var(--color-border);
+        box-shadow:-16px 0 48px rgba(0,0,0,0.18);
+        display:flex;flex-direction:column;
+        animation:slideInDrawer 0.28s cubic-bezier(0.22,1,0.36,1) both;
+        overflow:hidden;
+      }
+      .udr-header { padding:20px 20px 0;border-bottom:1px solid var(--color-border-soft); }
+      .udr-close-row { display:flex;align-items:center;justify-content:space-between;margin-bottom:16px; }
+      .udr-close-btn { width:30px;height:30px;border-radius:8px;border:1px solid var(--color-border);background:var(--color-bg);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--color-text-muted);transition:background 0.15s; }
+      .udr-close-btn:hover { background:var(--color-border-soft); }
+      .udr-profile { display:flex;align-items:center;gap:14px;padding-bottom:18px; }
+      .udr-avatar { width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--brand-blue-mid),var(--brand-blue));color:#fff;font-family:var(--font-display);font-size:1.1rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0; }
+      .udr-name { font-family:var(--font-display);font-size:1rem;font-weight:800;color:var(--color-text); }
+      .udr-username { font-size:0.78rem;color:var(--color-text-muted);margin-top:2px; }
+      .udr-stats-row { display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid var(--color-border-soft);border-bottom:1px solid var(--color-border-soft); }
+      .udr-stat { padding:12px 8px;text-align:center;border-right:1px solid var(--color-border-soft); }
+      .udr-stat:last-child { border-right:none; }
+      .udr-stat-val { font-family:var(--font-display);font-size:1.2rem;font-weight:800;color:var(--color-text); }
+      .udr-stat-lbl { font-size:0.62rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:var(--color-text-muted);margin-top:2px; }
+      .udr-body { flex:1;overflow-y:auto;padding:0 0 16px; }
+      .udr-section-title { font-family:var(--font-display);font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--color-text-muted);padding:14px 20px 8px; }
+      .udr-meeting-row { display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 20px;border-bottom:1px solid var(--color-border-soft);transition:background 0.12s; }
+      .udr-meeting-row:hover { background:var(--color-bg); }
+      .udr-meeting-row:last-child { border-bottom:none; }
+      .udr-meeting-name { font-size:0.84rem;font-weight:600;color:var(--color-text); }
+      .udr-meeting-meta { font-size:0.72rem;color:var(--color-text-muted);margin-top:2px; }
+      .udr-status-badge { font-size:0.67rem;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap;flex-shrink:0; }
+      .udr-status-pending { background:#fef3c7;color:#92400e; }
+      .udr-status-approved { background:#dcfce7;color:#166534; }
+      .udr-status-done { background:#dbeafe;color:#1e40af; }
+      .udr-status-cancelled,.udr-status-rejected { background:#fee2e2;color:#991b1b; }
+      .udr-status-cancellation-requested { background:#fff7ed;color:#c2410c; }
+    </style>
+    <div class="udr-header">
+      <div class="udr-close-row">
+        <span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--color-text-muted)">User Details</span>
+        <button class="udr-close-btn" id="udr-close-btn" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="udr-profile">
+        <div class="udr-avatar">${h(initials)}</div>
+        <div>
+          <div class="udr-name">${h(user.name || user.username)}</div>
+          <div class="udr-username">@${h(user.username)} &nbsp;·&nbsp; <span class="${roleChipClass(user.role)}">${h(user.role)}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="udr-stats-row">
+      <div class="udr-stat"><div class="udr-stat-val">${stats.total}</div><div class="udr-stat-lbl">Total</div></div>
+      <div class="udr-stat"><div class="udr-stat-val" style="color:#16a34a">${stats.approved}</div><div class="udr-stat-lbl">Approved</div></div>
+      <div class="udr-stat"><div class="udr-stat-val" style="color:#1b4b8a">${stats.done}</div><div class="udr-stat-lbl">Done</div></div>
+      <div class="udr-stat"><div class="udr-stat-val" style="color:#dc2626">${stats.cancelled}</div><div class="udr-stat-lbl">Cancelled</div></div>
+    </div>
+    <div class="udr-body">
+      <div class="udr-section-title">Meeting History</div>
+      <div id="udr-meetings-list">${meetingRows}</div>
+    </div>
+  `;
+
+  document.body.appendChild(backdrop);
+  document.body.appendChild(drawer);
+
+  document.getElementById("udr-close-btn")?.addEventListener("click", closeUserDrawer);
+
+  // Close on Escape
+  const escHandler = (e) => { if (e.key === "Escape") { closeUserDrawer(); document.removeEventListener("keydown", escHandler); } };
+  document.addEventListener("keydown", escHandler);
+}
+
+function closeUserDrawer() {
+  const drawer  = document.getElementById("user-detail-drawer");
+  const backdrop = document.getElementById("user-drawer-backdrop");
+  if (drawer) {
+    drawer.style.transition = "transform 0.22s ease, opacity 0.22s ease";
+    drawer.style.transform  = "translateX(100%)";
+    drawer.style.opacity    = "0";
+    setTimeout(() => drawer.remove(), 230);
+  }
+  if (backdrop) {
+    backdrop.style.transition = "opacity 0.22s ease";
+    backdrop.style.opacity    = "0";
+    setTimeout(() => backdrop.remove(), 230);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Admin Management
 // ---------------------------------------------------------------------------
 
@@ -2544,7 +3533,282 @@ document.addEventListener("DOMContentLoaded", () => {
   else if (page === "admin") initAdminPage();
   else if (page === "user") initUserPage();
 });
+
 // ===========================================================================
+// ANNOUNCEMENTS SYSTEM
+// Admin: post + delete; Users: read-only view; Dashboard: preview widget
+// ===========================================================================
+
+const ANN_TYPE_META = {
+  general:   { label: "General Info",     icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>`, color: "#3b82f6", bg: "rgba(59,130,246,0.08)"  },
+  important: { label: "Important Notice", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`, color: "#dc2626", bg: "rgba(220,38,38,0.08)"   },
+  reminder:  { label: "Reminder",         icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>`, color: "#f59e0b", bg: "rgba(245,158,11,0.08)"  },
+  event:     { label: "Upcoming Event",   icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`, color: "#8b5cf6", bg: "rgba(139,92,246,0.08)"  },
+};
+
+function _annMeta(type) {
+  return ANN_TYPE_META[type] || ANN_TYPE_META.general;
+}
+
+function _annTimeAgo(isoStr) {
+  if (!isoStr) return "";
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + "h ago";
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return days + "d ago";
+  return new Date(isoStr).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Render announcement card HTML — shared between admin and user views
+function _renderAnnCard(ann, isAdmin) {
+  const meta = _annMeta(ann.type);
+  const pinHtml = ann.pinned ? `<span style="font-size:0.7rem;font-weight:700;letter-spacing:0.04em;color:#d97706;background:rgba(217,119,6,0.12);padding:2px 8px;border-radius:999px;display:inline-flex;align-items:center;gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> PINNED</span>` : "";
+  const deleteHtml = isAdmin ? `<button class="btn btn-ghost btn-sm ann-delete-btn" data-id="${ann.id}" title="Delete announcement" style="color:var(--color-text-muted);padding:4px 8px;flex-shrink:0">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+  </button>` : "";
+
+  return `<div class="ann-card" data-id="${ann.id}" style="
+    border:1px solid var(--color-border-soft);
+    border-left: 4px solid ${meta.color};
+    border-radius:12px;
+    padding:16px 18px;
+    background:var(--color-surface);
+    display:flex;flex-direction:column;gap:8px;
+    transition:box-shadow 0.15s;
+  ">
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <div style="width:36px;height:36px;border-radius:10px;background:${meta.bg};display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${meta.color}">${meta.icon}</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px">
+          ${pinHtml}
+          <span style="font-size:0.7rem;font-weight:600;letter-spacing:0.05em;color:${meta.color};text-transform:uppercase">${meta.label}</span>
+        </div>
+        <div style="font-weight:700;font-size:0.95rem;color:var(--color-text);line-height:1.3;word-break:break-word">${_escHtml(ann.title)}</div>
+      </div>
+      ${deleteHtml}
+    </div>
+    <div style="font-size:0.875rem;color:var(--color-text-muted);line-height:1.6;white-space:pre-wrap;word-break:break-word;padding-left:46px">${_escHtml(ann.body)}</div>
+    <div style="font-size:0.75rem;color:var(--color-text-muted);padding-left:46px;display:flex;align-items:center;gap:6px">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      ${_annTimeAgo(ann.createdAt)}
+      ${ann.postedBy ? `· Posted by <strong>${_escHtml(ann.postedBy)}</strong>` : ""}
+    </div>
+  </div>`;
+}
+
+function _escHtml(str) {
+  if (!str) return "";
+  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ── Admin: render full announcements list ──────────────────────────────────
+function renderAdminAnnouncements(list) {
+  const el = document.getElementById("admin-announce-list");
+  if (!el) return;
+  const badge = document.getElementById("ann-total-badge");
+  if (badge) badge.textContent = list.length ? list.length + " posted" : "";
+
+  // Sort: pinned first, then by date desc
+  const sorted = list.slice().sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return (b.createdAt || "").localeCompare(a.createdAt || "");
+  });
+
+  if (!sorted.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:48px 20px">
+      <svg class="empty-state-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+      <p>No announcements posted yet.</p></div>`;
+    return;
+  }
+  el.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px;padding:16px">${sorted.map(a => _renderAnnCard(a, true)).join("")}</div>`;
+}
+
+// ── User: render announcements page + dashboard preview ────────────────────
+function renderUserAnnouncements(list) {
+  const el = document.getElementById("user-announce-list");
+  if (!el) return;
+  const sorted = list.slice().sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return (b.createdAt || "").localeCompare(a.createdAt || "");
+  });
+
+  if (!sorted.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:64px 20px">
+      <svg class="empty-state-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+      <p>No announcements yet.</p></div>`;
+    return;
+  }
+  el.innerHTML = sorted.map(a => _renderAnnCard(a, false)).join("");
+
+  // Check for new (unseen) announcements
+  try {
+    const lastSeen = parseInt(localStorage.getItem("sbp_ann_seen") || "0", 10);
+    const hasNew = sorted.some(a => a.createdAt && new Date(a.createdAt).getTime() > lastSeen);
+    const badge = document.getElementById("new-ann-badge");
+    if (badge) badge.style.display = hasNew ? "inline-flex" : "none";
+  } catch(e) {}
+}
+
+// ── Dashboard announcement preview (user) ─────────────────────────────────
+function renderUserDashAnnouncements(list) {
+  const el = document.getElementById("dash-announce-preview");
+  if (!el) return;
+  const sorted = list.slice().sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return (b.createdAt || "").localeCompare(a.createdAt || "");
+  }).slice(0, 3);
+
+  if (!sorted.length) {
+    el.innerHTML = `<div style="font-size:0.83rem;color:var(--color-text-muted);padding:16px 0;text-align:center">No announcements yet.</div>`;
+    return;
+  }
+  el.innerHTML = sorted.map(a => {
+    const meta = _annMeta(a.type);
+    const pin = a.pinned ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2.5" style="flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> ` : "";
+    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--color-border-soft)">
+      <div style="width:30px;height:30px;border-radius:8px;background:${meta.bg};display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${meta.color}">${meta.icon}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:0.86rem;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pin}${_escHtml(a.title)}</div>
+        <div style="font-size:0.77rem;color:var(--color-text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_escHtml(a.body)}</div>
+        <div style="font-size:0.72rem;color:var(--color-text-muted);margin-top:3px">${_annTimeAgo(a.createdAt)}</div>
+      </div>
+    </div>`;
+  }).join("") + `<div style="padding-top:8px;text-align:right">
+    <a href="#" class="dash-see-all" onclick="if(typeof switchSection==='function'){event.preventDefault();switchSection('announcements');}">See all →</a>
+  </div>`;
+}
+
+// ── Admin dashboard announcement preview ──────────────────────────────────
+function renderAdminDashAnnouncements(list) {
+  const el = document.getElementById("dash-admin-announce-preview");
+  if (!el) return;
+  const recent = list.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).slice(0, 2);
+  if (!recent.length) {
+    el.innerHTML = `<div style="font-size:0.83rem;color:var(--color-text-muted);padding:12px 0">No announcements posted yet.</div>`;
+    return;
+  }
+  el.innerHTML = recent.map(a => {
+    const meta = _annMeta(a.type);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--color-border-soft)">
+      <div style="width:26px;height:26px;border-radius:7px;background:${meta.bg};display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${meta.color}">${meta.icon}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:0.85rem;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_escHtml(a.title)}</div>
+        <div style="font-size:0.73rem;color:var(--color-text-muted)">${_annTimeAgo(a.createdAt)}</div>
+      </div>
+    </div>`;
+  }).join("") + `<div style="padding-top:8px;text-align:right">
+    <a href="#" class="dash-see-all" onclick="if(typeof switchSection==='function'){event.preventDefault();switchSection('announcements');}">Manage →</a>
+  </div>`;
+}
+
+// ── Wire admin announcements form ──────────────────────────────────────────
+function initAdminAnnouncements() {
+  const form = document.getElementById("announce-form");
+  if (!form) return;
+
+  // Subscribe to live updates
+  if (window.api && window.api.subscribeAnnouncements) {
+    window.api.subscribeAnnouncements(list => {
+      window.announcements = list;
+      renderAdminAnnouncements(list);
+      renderAdminDashAnnouncements(list);
+      const badge = document.getElementById("announce-count-badge");
+      if (badge) {
+        badge.textContent = list.length;
+        badge.style.display = list.length ? "inline-flex" : "none";
+      }
+    });
+  }
+
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const titleEl = document.getElementById("ann-title");
+    const bodyEl  = document.getElementById("ann-body");
+    const typeEl  = document.getElementById("ann-type");
+    const pinEl   = document.getElementById("ann-pinned");
+    const msgEl   = document.getElementById("ann-msg");
+    const btn     = document.getElementById("ann-submit-btn");
+
+    const title = (titleEl?.value || "").trim();
+    const body  = (bodyEl?.value  || "").trim();
+    if (!title) { if (msgEl) msgEl.textContent = "Title is required."; titleEl?.focus(); return; }
+    if (!body)  { if (msgEl) msgEl.textContent = "Message is required."; bodyEl?.focus(); return; }
+    if (msgEl) msgEl.textContent = "";
+
+    const currentUser = getCurrentUser();
+    const ann = {
+      title, body,
+      type:      typeEl?.value || "general",
+      pinned:    pinEl?.checked || false,
+      postedBy:  currentUser?.name || currentUser?.username || "Admin",
+      createdAt: new Date().toISOString(),
+    };
+
+    if (btn) { btn.disabled = true; btn.textContent = "Posting…"; }
+    try {
+      await window.api.addAnnouncement(ann);
+      // Notify all non-admin users
+      if (window.users) {
+        window.users.filter(u => u.role !== ROLES.ADMIN).forEach(u => {
+          addNotification(u.id || u.username,
+            `New announcement: <strong>${title}</strong>`,
+            "info", "announcements");
+        });
+      }
+      showToast("Announcement posted successfully!", "success");
+      form.reset();
+      // Refresh list
+      const list = await window.api.getAnnouncements();
+      renderAdminAnnouncements(list);
+      renderAdminDashAnnouncements(list);
+    } catch(err) {
+      showToast("Failed to post announcement.", "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Post Announcement`; }
+    }
+  });
+
+  // Delete delegation
+  document.getElementById("admin-announce-list")?.addEventListener("click", async e => {
+    const btn = e.target.closest(".ann-delete-btn");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    if (!id) return;
+    openConfirmModal("Delete Announcement",
+      "Are you sure you want to delete this announcement? This cannot be undone.",
+      async () => {
+        try {
+          await window.api.deleteAnnouncement(id);
+          showToast("Announcement deleted.", "success");
+          const list = await window.api.getAnnouncements();
+          renderAdminAnnouncements(list);
+          renderAdminDashAnnouncements(list);
+        } catch(err) {
+          showToast("Failed to delete.", "error");
+        }
+      }
+    );
+  });
+}
+
+// ── Wire user announcements (read-only) ───────────────────────────────────
+function initUserAnnouncements() {
+  if (!window.api?.subscribeAnnouncements) return;
+  window.api.subscribeAnnouncements(list => {
+    window.announcements = list;
+    renderUserAnnouncements(list);
+    renderUserDashAnnouncements(list);
+  });
+}
+
+
 // BOTTOM DRAWER — mobile replacement for modals (≤768px)
 // Completely independent from the .modal system — no inline style conflicts.
 // ===========================================================================
@@ -2708,6 +3972,11 @@ document.addEventListener("DOMContentLoaded", () => {
              const c = STATUS_STYLE[m.status] || STATUS_STYLE["Cancelled"];
              const timeRange = m.timeStart
                ? formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS) : "—";
+             const belongsToMe = meetingBelongsToUser(m, currentUser);
+             const canCancel = belongsToMe && currentUser.role !== ROLES.ADMIN && ["Pending", "Approved"].includes(m.status);
+             const createdAt = m.createdAt ? new Date(m.createdAt) : null;
+             const within24h = createdAt && (new Date() - createdAt) < 24 * 60 * 60 * 1000;
+             const cancelLabel = within24h ? "Cancel (Free)" : "Request Cancel";
              return `
                <div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${c.border};border-radius:10px;padding:12px 14px">
                  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
@@ -2746,6 +4015,23 @@ document.addEventListener("DOMContentLoaded", () => {
                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                        </svg>${h(m.adminNote)}</div>` : ""}
+                     ${belongsToMe ? `
+                       <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+                         ${canCancel ? `<button
+                           class="btn btn-sm ${within24h ? "btn-ghost cancel-btn-free" : "btn-ghost"}"
+                           style="font-size:0.75rem;padding:4px 10px"
+                           data-action="request-cancel"
+                           data-meeting-id="${m.id}">
+                           ${cancelLabel}
+                         </button>` : ""}
+                         <button
+                           class="btn btn-sm btn-ghost"
+                           style="font-size:0.75rem;padding:4px 10px"
+                           data-action="export-pdf"
+                           data-meeting-id="${m.id}">
+                           Export PDF
+                         </button>
+                       </div>` : ""}
                    </div>
                    <span style="flex-shrink:0;font-size:0.69rem;font-weight:700;background:white;color:${c.text};border:1px solid ${c.border};padding:3px 9px;border-radius:999px;white-space:nowrap">
                      ${m.status}
@@ -2790,6 +4076,13 @@ document.addEventListener("DOMContentLoaded", () => {
           // Small delay so first drawer fully closes before second opens
           setTimeout(() => openBookingDrawer(isoDate), 120);
         });
+
+      // Delegate cancel + export-pdf button clicks inside the day drawer meeting cards
+      drawer.addEventListener("click", function (e) {
+        const btn = e.target.closest("button[data-action]");
+        if (!btn) return;
+        handleMyMeetingsClick(e);
+      });
     });
   };
 
@@ -2798,7 +4091,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.openBookingDrawer = function (isoDate) {
     const currentUser = getCurrentUser();
     if (!currentUser ||
-        ![ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR]
+        ![ROLES.ADMIN, ROLES.COUNCILOR, ROLES.RESEARCHER, ROLES.VICE_MAYOR, ROLES.SECRETARY]
           .includes(currentUser.role)) {
       showToast("Only authorized roles may book meetings.", "warning");
       return;
@@ -2819,6 +4112,48 @@ document.addEventListener("DOMContentLoaded", () => {
       </svg>
       Schedule Meeting`;
 
+    // Build councilor options
+    const dbCouncilorOpts = users
+      .filter(u => u.role === ROLES.COUNCILOR || u.role === ROLES.VICE_MAYOR)
+      .map(u => `<option value="${h(u.name || u.username)}">${h(u.name || u.username)} (${u.role})</option>`)
+      .join("");
+    const dbResearcherOpts = users
+      .filter(u => u.role === ROLES.RESEARCHER)
+      .map(u => `<option value="${h(u.name || u.username)}">${h(u.name || u.username)} (${u.role})</option>`)
+      .join("");
+
+    const isAdminDrawer = currentUser.role === ROLES.ADMIN;
+    const isCouncilorDrawer = currentUser.role === ROLES.COUNCILOR;
+    const isResearcherDrawer = currentUser.role === ROLES.RESEARCHER;
+
+    const dbCouncilorField = isResearcherDrawer
+      ? `<select id="db-councilor" class="field" required>
+           <option value="">— Select Councilor —</option>
+           <option value="N/A">N/A (No Councilor)</option>
+           ${dbCouncilorOpts}
+         </select>`
+      : isCouncilorDrawer
+        ? `<input id="db-councilor" class="field" value="${h(currentUser.name)}" readonly />`
+        : `<select id="db-councilor" class="field" required>
+             <option value="">— Select Councilor —</option>
+             <option value="N/A">N/A (No Councilor)</option>
+             ${dbCouncilorOpts}
+           </select>`;
+
+    const dbResearcherField = isCouncilorDrawer
+      ? `<select id="db-researcher" class="field" required>
+           <option value="">— Select Researcher —</option>
+           <option value="N/A">N/A (No Researcher)</option>
+           ${dbResearcherOpts}
+         </select>`
+      : isResearcherDrawer
+        ? `<input id="db-researcher" class="field" value="${h(currentUser.name)}" readonly />`
+        : `<select id="db-researcher" class="field" required>
+             <option value="">— Select Researcher —</option>
+             <option value="N/A">N/A (No Researcher)</option>
+             ${dbResearcherOpts}
+           </select>`;
+
     const bodyHTML = `
       <form id="drawer-booking-form" class="section-stack" onsubmit="return false">
         <div>
@@ -2831,11 +4166,11 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
         <div>
           <label class="field-label" for="db-councilor">Councilor *</label>
-          <input id="db-councilor" class="field" required autocomplete="off" />
+          ${dbCouncilorField}
         </div>
         <div>
           <label class="field-label" for="db-researcher">Researcher *</label>
-          <input id="db-researcher" class="field" required autocomplete="off" />
+          ${dbResearcherField}
         </div>
         <div>
           <label class="field-label" for="db-date">Date *</label>
@@ -2876,6 +4211,11 @@ document.addEventListener("DOMContentLoaded", () => {
                  style="display:none;margin-top:8px" />
         </div>
         <div>
+          <label class="field-label" for="db-stakeholders">Stakeholders / External Participants</label>
+          <input id="db-stakeholders" class="field" placeholder="e.g. DILG, DSWD, Barangay Representatives (comma-separated)" autocomplete="off" />
+          <div class="helper-text" style="margin-top:3px;font-size:0.78rem">Optional — list organizations or individuals attending from outside.</div>
+        </div>
+        <div>
           <label class="field-label" for="db-notes">Notes</label>
           <textarea id="db-notes" class="field" rows="3" style="resize:vertical"
                     placeholder="Optional additional information…"></textarea>
@@ -2897,16 +4237,6 @@ document.addEventListener("DOMContentLoaded", () => {
     _openDrawer(drawer);
 
     requestAnimationFrame(() => {
-      // Prefill role-based fields
-      if (currentUser.role === ROLES.COUNCILOR) {
-        const el = document.getElementById("db-councilor");
-        if (el) { el.value = currentUser.name; el.readOnly = true; }
-      }
-      if (currentUser.role === ROLES.RESEARCHER) {
-        const el = document.getElementById("db-researcher");
-        if (el) { el.value = currentUser.name; el.readOnly = true; }
-      }
-
       // Populate dropdowns
       _dbPopulateTime(activeDate);
       _dbPopulateDuration();
@@ -3046,10 +4376,23 @@ document.addEventListener("DOMContentLoaded", () => {
     const type         = typeVal === "Others" ? get("db-type-other") : typeVal;
     const venueVal     = get("db-venue");
     const venue        = venueVal === "Others" ? get("db-venue-other") : venueVal;
+    const stakeholders = get("db-stakeholders");
     const notes        = get("db-notes");
 
-    if (!eventName || !committee || !councilor || !researcher || !date || !timeStart) {
+    if (!eventName || !committee || !date || !timeStart) {
       if (msg) msg.textContent = "Please fill in all required fields.";
+      return;
+    }
+    if (!councilor) {
+      if (msg) msg.textContent = "Please select a Councilor or choose N/A.";
+      return;
+    }
+    if (!researcher) {
+      if (msg) msg.textContent = "Please select a Researcher or choose N/A.";
+      return;
+    }
+    if (councilor === "N/A" && researcher === "N/A") {
+      if (msg) msg.textContent = "Councilor and Researcher cannot both be N/A.";
       return;
     }
     const todayISO = getTodayISOManila();
@@ -3064,27 +4407,49 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.api.addMeeting({
       id: `mtg_${Math.random().toString(36).slice(2, 9)}`,
-      eventName, committee, councilor, researcher,
+      eventName, committee, councilor, researcher, stakeholders,
       date, timeStart, durationHours,
       type, venue, notes,
-      status: "Pending",
+      status: currentUser.role === ROLES.ADMIN ? "Approved" : "Pending",
       createdBy: currentUser.username,
       createdByRole: currentUser.role,
       createdAt: new Date().toISOString(),
     }).then(() => {
-      // Notify all admins of new request
-      users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
-        addNotification(
-          admin.id || admin.username,
-          `New meeting request from <strong>${currentUser.name}</strong>: <strong>"${eventName}"</strong> on ${formatDateDisplay(date)} at ${formatTimeRange(timeStart, durationHours)}. Review and take action.`,
+      // Only notify admins if it's a user request (admin doesn't need to notify themselves)
+      if (currentUser.role !== ROLES.ADMIN) {
+        users.filter(u => u.role === ROLES.ADMIN).forEach(admin => {
+          addNotification(
+            admin.id || admin.username,
+            `New meeting request from <strong>${currentUser.name}</strong>: <strong>"${eventName}"</strong> on ${formatDateDisplay(date)} at ${formatTimeRange(timeStart, durationHours)}. Review and take action.`,
           "info",
           "meeting-logs"
         );
       });
+      } // end if non-admin notify
+      // If admin scheduled on behalf of councilor/researcher, notify them
+      if (currentUser.role === ROLES.ADMIN) {
+        const dateStr = formatDateDisplay(date);
+        const timeStr = formatTimeRange(timeStart, durationHours);
+        if (councilor && councilor !== "N/A") {
+          const cUser = users.find(u => u.name === councilor);
+          if (cUser) addNotification(cUser.id || cUser.username,
+            `The Admin has scheduled a meeting on your behalf: <strong>"${eventName}"</strong> on ${dateStr} at ${timeStr}. Venue: ${venue}. Status: <strong>Approved</strong>.`,
+            "success", "my-meetings");
+        }
+        if (researcher && researcher !== "N/A") {
+          const rUser = users.find(u => u.name === researcher);
+          if (rUser) addNotification(rUser.id || rUser.username,
+            `The Admin has scheduled a meeting on your behalf: <strong>"${eventName}"</strong> on ${dateStr} at ${timeStr}. Venue: ${venue}. Status: <strong>Approved</strong>.`,
+            "success", "my-meetings");
+        }
+      }
       // Optimistic badge refresh
       updateNotificationBadge(currentUser.id || currentUser.username);
 
-      showToast("Meeting request submitted! Awaiting admin approval.", "success");
+      const toastMsg = currentUser.role === ROLES.ADMIN
+        ? "Meeting scheduled and automatically approved."
+        : "Meeting request submitted! Awaiting admin approval.";
+      showToast(toastMsg, "success");
       renderCalendar();
       renderMyMeetingsTable(currentUser);
       renderAdminMeetingsTable();
@@ -3095,5 +4460,42 @@ document.addEventListener("DOMContentLoaded", () => {
       if (btn) { btn.disabled = false; btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg> Save Schedule`; }
     });
   }
+
+  // ── Logout confirmation drawer (mobile) ───────────────────────────────────
+  window.openLogoutDrawer = function (onConfirm) {
+    const titleHTML = `
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+        <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+      </svg>
+      Sign Out`;
+
+    const bodyHTML = `
+      <div style="text-align:center;padding:8px 0 4px">
+        <div style="width:56px;height:56px;border-radius:50%;background:#fee2e2;display:flex;align-items:center;justify-content:center;margin:0 auto 14px">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.2">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+            <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </div>
+        <div style="font-weight:700;font-size:1rem;color:var(--color-text);margin-bottom:6px">Sign out?</div>
+        <div style="font-size:0.86rem;color:var(--color-text-muted);line-height:1.5">Any unsaved changes will be lost.</div>
+      </div>`;
+
+    const footerHTML = `
+      <button id="logout-drawer-cancel" class="btn btn-ghost" style="flex:1">Cancel</button>
+      <button id="logout-drawer-confirm" class="btn btn-danger" style="flex:1">Sign Out</button>`;
+
+    const drawer = _makeDrawer("drawer-logout", titleHTML, "", bodyHTML, footerHTML);
+    _openDrawer(drawer);
+
+    requestAnimationFrame(() => {
+      document.getElementById("logout-drawer-cancel")?.addEventListener("click", _closeActive);
+      document.getElementById("logout-drawer-confirm")?.addEventListener("click", () => {
+        _closeActive();
+        onConfirm();
+      });
+    });
+  };
 
 })();

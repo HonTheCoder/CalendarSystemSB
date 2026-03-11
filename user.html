@@ -52,6 +52,15 @@
             </span>
             <span>My Meetings</span>
           </a>
+
+          <div class="sidebar-nav-label" style="margin-top:14px">Communications</div>
+          <a href="#" class="nav-link" data-section="announcements">
+            <span class="nav-link-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+            </span>
+            <span>Announcements</span>
+            <span class="nav-notif-badge" id="new-ann-badge" style="display:none">New</span>
+          </a>
         </nav>
 
         <footer class="sidebar-footer">
@@ -109,6 +118,41 @@
                DASHBOARD
           ══════════════════════════ -->
           <div id="section-dashboard" class="user-section active">
+
+            <!-- ══ SKELETON LOADER ══ -->
+            <div id="user-dashboard-skeleton" aria-hidden="true">
+              <div class="sk-welcome">
+                <div class="sk-welcome-left">
+                  <div class="skeleton sk-line-sm" style="width:80px"></div>
+                  <div class="skeleton sk-line-xl" style="width:220px"></div>
+                  <div class="skeleton sk-line" style="width:160px"></div>
+                </div>
+                <div class="skeleton sk-rect" style="width:48px;height:48px;border-radius:12px"></div>
+              </div>
+              <div class="dash-stat-row" style="margin-top:0">
+                <div class="sk-stat-card"><div class="sk-stat-card-row"><div style="flex:1;display:flex;flex-direction:column;gap:8px"><div class="skeleton sk-line-sm" style="width:70px"></div><div class="skeleton sk-line-xl" style="width:50px"></div></div><div class="skeleton sk-stat-icon"></div></div></div>
+                <div class="sk-stat-card"><div class="sk-stat-card-row"><div style="flex:1;display:flex;flex-direction:column;gap:8px"><div class="skeleton sk-line-sm" style="width:70px"></div><div class="skeleton sk-line-xl" style="width:50px"></div></div><div class="skeleton sk-stat-icon"></div></div></div>
+                <div class="sk-stat-card"><div class="sk-stat-card-row"><div style="flex:1;display:flex;flex-direction:column;gap:8px"><div class="skeleton sk-line-sm" style="width:70px"></div><div class="skeleton sk-line-xl" style="width:50px"></div></div><div class="skeleton sk-stat-icon"></div></div></div>
+              </div>
+              <div class="dashboard-grid">
+                <div class="chart-card" style="padding:20px">
+                  <div class="skeleton sk-line-sm" style="width:130px;margin-bottom:14px"></div>
+                  <div class="sk-chart-bars">
+                    <div class="skeleton sk-chart-bar" style="height:55%"></div>
+                    <div class="skeleton sk-chart-bar" style="height:80%"></div>
+                    <div class="skeleton sk-chart-bar" style="height:40%"></div>
+                    <div class="skeleton sk-chart-bar" style="height:65%"></div>
+                    <div class="skeleton sk-chart-bar" style="height:90%"></div>
+                  </div>
+                </div>
+                <div class="chart-card" style="padding:20px">
+                  <div class="skeleton sk-line-sm" style="width:130px;margin-bottom:14px"></div>
+                  <div class="sk-ann-item"><div class="skeleton sk-ann-icon"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px"><div class="skeleton sk-line" style="width:80%"></div><div class="skeleton sk-line-sm" style="width:60%"></div></div></div>
+                  <div class="sk-ann-item"><div class="skeleton sk-ann-icon"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px"><div class="skeleton sk-line" style="width:70%"></div><div class="skeleton sk-line-sm" style="width:50%"></div></div></div>
+                </div>
+              </div>
+            </div>
+            <!-- ══ END SKELETON ══ -->
 
             <!-- Welcome banner -->
             <div class="welcome-banner">
@@ -219,6 +263,18 @@
                 </div>
               </div>
             </div>
+
+            <!-- Announcements preview -->
+            <div class="chart-card">
+              <div class="chart-card-title">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+                Announcements
+                <span class="dash-see-all" onclick="if(typeof switchSection==='function'){switchSection('announcements');}">See all →</span>
+              </div>
+              <div id="dash-announce-preview" style="padding:0 4px">
+                <div style="font-size:0.83rem;color:var(--color-text-muted);padding:12px 0;text-align:center">Loading…</div>
+              </div>
+            </div>
           </div>
 
           <!-- ══════════════════════════
@@ -325,13 +381,30 @@
             </div>
           </div>
 
+          <!-- ══════════════════════════
+               ANNOUNCEMENTS (read-only)
+          ══════════════════════════ -->
+          <div id="section-announcements" class="user-section">
+            <div class="page-header">
+              <div>
+                <div class="page-header-title">Announcements</div>
+                <div class="page-header-sub">Official notices and updates from the Sangguniang Bayan administration.</div>
+              </div>
+            </div>
+            <div id="user-announce-list" style="display:flex;flex-direction:column;gap:14px">
+              <div class="empty-state" style="padding:64px 20px">
+                <svg class="empty-state-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+                <p>No announcements yet.</p>
+              </div>
+            </div>
+          </div>
+
         </main>
       </div>
     </div>
-
-    <!-- ── Booking modal ── -->
+    <!-- ── Booking Modal ── -->
     <div id="meeting-modal" class="modal-backdrop">
-      <div class="modal">
+      <div class="modal meeting-modal-wide">
         <div class="modal-header">
           <div class="modal-title">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -341,55 +414,32 @@
         </div>
         <form id="meeting-form">
           <div class="modal-body section-stack">
+
+            <!-- Row 1: Event Name + Committee -->
             <div class="form-grid-2">
               <div>
                 <label for="meeting-event" class="field-label">Event Name *</label>
-                <input id="meeting-event" class="field" required placeholder="e.g. Committee Hearing" />
+                <input id="meeting-event" class="field" required placeholder="e.g. Budget Review Hearing" />
               </div>
               <div>
                 <label for="meeting-committee" class="field-label">Committee *</label>
                 <input id="meeting-committee" class="field" required placeholder="e.g. Ways and Means" />
               </div>
             </div>
-            <div class="form-grid-2">
-              <div>
-                <label for="meeting-councilor" class="field-label">Councilor *</label>
-                <input id="meeting-councilor" class="field" required />
-              </div>
-              <div>
-                <label for="meeting-researcher" class="field-label">Researcher *</label>
-                <input id="meeting-researcher" class="field" required />
-              </div>
-            </div>
-            <div class="form-grid-2">
-              <div>
-                <label for="meeting-date" class="field-label">Date *</label>
-                <input id="meeting-date" type="date" class="field" required />
-              </div>
-              <div>
-                <label for="meeting-time" class="field-label">Start Time *</label>
-                <select id="meeting-time" class="field" required></select>
-                <div id="time-slot-availability-hint" class="helper-text" style="margin-top:4px"></div>
-                <div class="calendar-lunch-block">Office hours: 8:00 AM – 5:00 PM</div>
-                <div id="meeting-end-preview" class="helper-text"></div>
-              </div>
-            </div>
-            <div class="form-grid-2">
-              <div>
-                <label for="meeting-duration" class="field-label">Duration *</label>
-                <select id="meeting-duration" class="field" required></select>
-                <div id="meeting-duration-hint" class="helper-text"></div>
-              </div>
-            </div>
+
+            <!-- Row 2: Type + Venue -->
             <div class="form-grid-2">
               <div>
                 <label for="meeting-type" class="field-label">Type of Meeting *</label>
                 <select id="meeting-type" class="field">
-                  <option value="Regular Session">Regular Session</option>
-                  <option value="Special Session">Special Session</option>
+                  <option value="Committee Meeting">Committee Meeting</option>
+                  <option value="Committee Hearing">Committee Hearing</option>
+                  <option value="Committee Deliberation">Committee Deliberation</option>
+                  <option value="Public Meeting">Public Meeting</option>
+                  <option value="Consultative Meeting">Consultative Meeting</option>
                   <option value="Others">Others (Please Specify)</option>
                 </select>
-                <input id="meeting-type-other" class="field" placeholder="Please specify type of meeting..." style="display:none;margin-top:6px" />
+                <input id="meeting-type-other" class="field" placeholder="Please specify type…" style="display:none;margin-top:6px" />
               </div>
               <div>
                 <label for="meeting-venue" class="field-label">Venue *</label>
@@ -399,25 +449,143 @@
                   <option value="ABC Hall">ABC Hall</option>
                   <option value="Others">Others (Please Specify)</option>
                 </select>
-                <input id="meeting-venue-other" class="field" placeholder="Please specify venue..." style="display:none;margin-top:6px" />
+                <input id="meeting-venue-other" class="field" placeholder="Please specify venue…" style="display:none;margin-top:6px" />
               </div>
             </div>
-            <div>
-              <label for="meeting-notes" class="field-label">Notes</label>
-              <textarea id="meeting-notes" class="field" rows="3" style="resize:vertical" placeholder="Optional additional information…"></textarea>
+
+            <!-- Row 3: Councilor + Researcher -->
+            <div class="form-grid-2">
+              <div>
+                <label for="meeting-councilor" class="field-label">Councilor *</label>
+                <input id="meeting-councilor" class="field" required placeholder="Full name" />
+              </div>
+              <div>
+                <label for="meeting-researcher" class="field-label">Researcher *</label>
+                <input id="meeting-researcher" class="field" required placeholder="Full name" />
+              </div>
             </div>
+
+            <!-- Row 4: Date + Time + Duration -->
+            <div class="form-grid-3">
+              <div>
+                <label for="meeting-date" class="field-label">Date *</label>
+                <input id="meeting-date" type="date" class="field" required />
+              </div>
+              <div>
+                <label for="meeting-time" class="field-label">Start Time *</label>
+                <select id="meeting-time" class="field" required></select>
+                <div id="time-slot-availability-hint" class="helper-text" style="margin-top:3px"></div>
+              </div>
+              <div>
+                <label for="meeting-duration" class="field-label">Duration *</label>
+                <select id="meeting-duration" class="field" required></select>
+                <div id="meeting-duration-hint" class="helper-text"></div>
+              </div>
+            </div>
+
+            <!-- Office hours info bar -->
+            <div class="meeting-time-infobar">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Office hours: Mon–Fri, 8:00 AM – 5:00 PM
+              <span id="meeting-end-preview" class="meeting-end-preview-val"></span>
+              <div id="meeting-duration-hint" style="display:none"></div>
+              <div class="calendar-lunch-block" style="display:none"></div>
+            </div>
+
+            <!-- Row 5: Stakeholders (full width) -->
+            <div>
+              <label for="meeting-stakeholders" class="field-label">Stakeholders / External Participants</label>
+              <input id="meeting-stakeholders" class="field" placeholder="e.g. DILG, DSWD, Barangay Representatives (comma-separated)" />
+              <div class="helper-text" style="margin-top:3px">Optional — list organizations or individuals attending from outside.</div>
+            </div>
+
+            <!-- Row 6: Notes -->
+            <div>
+              <label for="meeting-notes" class="field-label">Notes / Agenda</label>
+              <textarea id="meeting-notes" class="field" rows="2" style="resize:vertical" placeholder="Optional additional information or agenda items…"></textarea>
+            </div>
+
             <div id="meeting-form-message" class="helper-text" style="color:var(--color-danger)"></div>
           </div>
           <div class="modal-footer">
             <button type="button" id="meeting-cancel-btn" class="btn btn-ghost btn-sm">Cancel</button>
             <button type="submit" class="btn btn-primary btn-sm">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
-              Save Schedule
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+              Review &amp; Submit
             </button>
           </div>
         </form>
       </div>
     </div>
+
+    <!-- ── Policy / T&C Modal ── -->
+    <div id="policy-modal" class="modal-backdrop" style="z-index:700">
+      <div class="modal policy-modal-inner">
+        <div class="policy-modal-header">
+          <div class="policy-modal-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <div>
+            <div class="policy-modal-title">Scheduling Policies</div>
+            <div class="policy-modal-sub">Please read before submitting your request</div>
+          </div>
+        </div>
+
+        <div class="policy-meeting-summary" id="policy-meeting-summary">
+          <!-- Filled by JS -->
+        </div>
+
+        <div class="policy-rules-list">
+          <div class="policy-rule policy-rule-featured">
+            <div class="policy-rule-num">01</div>
+            <div class="policy-rule-body">
+              <strong>24-Hour Free Cancellation.</strong>
+              After submitting, you may cancel this request <span class="policy-highlight">within 24 hours</span> without admin approval — just go to My Meetings and click Cancel. After 24 hours, a cancellation request will be sent to the admin for review.
+            </div>
+          </div>
+          <div class="policy-rule">
+            <div class="policy-rule-num">02</div>
+            <div class="policy-rule-body">
+              <strong>Admin Approval Required.</strong>
+              Your meeting will stay as <em>Pending</em> until the admin approves or rejects it. You will be notified of the decision.
+            </div>
+          </div>
+          <div class="policy-rule">
+            <div class="policy-rule-num">03</div>
+            <div class="policy-rule-body">
+              <strong>Weekdays Only, Office Hours.</strong>
+              Meetings must be on Monday–Friday, between 8:00 AM and 5:00 PM. No bookings on Philippine public holidays.
+            </div>
+          </div>
+          <div class="policy-rule">
+            <div class="policy-rule-num">04</div>
+            <div class="policy-rule-body">
+              <strong>One Slot per Time Block.</strong>
+              Overlapping pending requests may be auto-cancelled if another meeting for the same time slot gets approved first.
+            </div>
+          </div>
+        </div>
+
+        <label class="policy-agree-row" id="policy-agree-label">
+          <input type="checkbox" id="policy-agree-check" />
+          <span class="policy-agree-checkbox"></span>
+          <span class="policy-agree-text">I have read and agree to the above scheduling policies.</span>
+        </label>
+        <div id="policy-agree-error" style="color:var(--color-danger);font-size:0.78rem;min-height:1.1em;padding:0 20px 4px"></div>
+
+        <div class="policy-modal-footer">
+          <button type="button" id="policy-modal-back" class="btn btn-ghost btn-sm">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+            Back to Form
+          </button>
+          <button type="button" id="policy-modal-confirm" class="btn btn-primary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/></svg>
+            Confirm &amp; Submit Request
+          </button>
+        </div>
+      </div>
+    </div>
+
 
     <!-- Mobile bottom nav -->
     <nav class="bottom-nav">
@@ -431,7 +599,11 @@
       </a>
       <a href="#" class="bottom-nav-item" data-section="my-meetings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-        <span>My Meetings</span>
+        <span>Meetings</span>
+      </a>
+      <a href="#" class="bottom-nav-item" data-section="announcements">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+        <span>Announce</span>
       </a>
     </nav>
 
@@ -448,7 +620,7 @@
     <!-- Section navigation -->
     <script>
       (function () {
-        var SECTION_TITLES = { dashboard: 'Dashboard', calendar: 'Meeting Calendar', 'my-meetings': 'My Meetings' };
+        var SECTION_TITLES = { dashboard: 'Dashboard', calendar: 'Meeting Calendar', 'my-meetings': 'My Meetings', announcements: 'Announcements' };
         function switchSection(key) {
           document.querySelectorAll('.user-section').forEach(function (el) { el.classList.remove('active'); });
           var target = document.getElementById('section-' + key);
@@ -461,6 +633,12 @@
           });
           var titleEl = document.getElementById('topbar-section-title');
           if (titleEl) titleEl.textContent = SECTION_TITLES[key] || key;
+          // Hide "New" badge when user visits announcements
+          if (key === 'announcements') {
+            var badge = document.getElementById('new-ann-badge');
+            if (badge) badge.style.display = 'none';
+            try { localStorage.setItem('sbp_ann_seen', Date.now().toString()); } catch(e) {}
+          }
           try { sessionStorage.setItem('user_section', key); } catch(e) {}
         }
         document.querySelectorAll('.nav-link[data-section]').forEach(function (a) {
@@ -470,11 +648,18 @@
           a.addEventListener('click', function (e) { e.preventDefault(); switchSection(a.dataset.section); });
         });
         document.addEventListener('DOMContentLoaded', function () {
-          try {
-            var saved = sessionStorage.getItem('user_section');
-            if (saved && document.getElementById('section-' + saved)) { switchSection(saved); }
-            else { switchSection('dashboard'); }
-          } catch(e) { switchSection('dashboard'); }
+          // Always land on dashboard when coming fresh from login
+          var fromLogin = sessionStorage.getItem('sbp_just_logged_in');
+          if (fromLogin) {
+            sessionStorage.removeItem('sbp_just_logged_in');
+            switchSection('dashboard');
+          } else {
+            try {
+              var saved = sessionStorage.getItem('user_section');
+              if (saved && document.getElementById('section-' + saved)) { switchSection(saved); }
+              else { switchSection('dashboard'); }
+            } catch(e) { switchSection('dashboard'); }
+          }
         });
       })();
     </script>

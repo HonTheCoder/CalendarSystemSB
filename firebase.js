@@ -23,6 +23,8 @@
     if (fellBack) return
     mode = "local"
     fellBack = true
+    // Keep api.mode in sync so callers reading api.mode always see the live value
+    api.mode = "local"
   }
   function lsGet(key, fallback) {
     try {
@@ -39,6 +41,7 @@
     USERS: "sbp_users",
     MEETINGS: "sbp_meetings",
     HISTORY: "sbp_calendar_history",
+    ANNOUNCEMENTS: "sbp_announcements",
   }
   function statusToColor(status) {
     if (status === "Approved") return "#16a34a"
@@ -405,6 +408,54 @@
         lsSet(LS.HISTORY, history)
         lsSet(LS.MEETINGS, remain)
         return Promise.resolve({ archived: count })
+      }
+    },
+    getAnnouncements: function () {
+      if (mode === "firestore") {
+        return db.collection("announcements").orderBy("createdAt", "desc").get()
+          .then(function (snap) {
+            return snap.docs.map(function (d) { var v = d.data(); v.id = d.id; return v; });
+          }).catch(function () { return lsGet(LS.ANNOUNCEMENTS, []).slice().reverse(); });
+      } else {
+        return Promise.resolve(lsGet(LS.ANNOUNCEMENTS, []).slice().reverse());
+      }
+    },
+    addAnnouncement: function (ann) {
+      if (mode === "firestore") {
+        return db.collection("announcements").add(ann)
+          .then(function (ref) { return Object.assign({ id: ref.id }, ann); })
+          .catch(function () {
+            var list = lsGet(LS.ANNOUNCEMENTS, []); ann.id = "ann_" + Date.now(); list.push(ann); lsSet(LS.ANNOUNCEMENTS, list); return ann;
+          });
+      } else {
+        var list = lsGet(LS.ANNOUNCEMENTS, []); ann.id = "ann_" + Date.now(); list.push(ann); lsSet(LS.ANNOUNCEMENTS, list);
+        return Promise.resolve(ann);
+      }
+    },
+    deleteAnnouncement: function (id) {
+      if (mode === "firestore") {
+        return db.collection("announcements").doc(id).delete()
+          .catch(function () {
+            var list = lsGet(LS.ANNOUNCEMENTS, []).filter(function (a) { return a.id !== id; });
+            lsSet(LS.ANNOUNCEMENTS, list);
+          });
+      } else {
+        var list = lsGet(LS.ANNOUNCEMENTS, []).filter(function (a) { return a.id !== id; });
+        lsSet(LS.ANNOUNCEMENTS, list);
+        return Promise.resolve();
+      }
+    },
+    subscribeAnnouncements: function (cb) {
+      if (mode === "firestore") {
+        try {
+          return db.collection("announcements").orderBy("createdAt", "desc").onSnapshot(
+            function (snap) { cb(snap.docs.map(function (d) { var v = d.data(); v.id = d.id; return v; })); },
+            function () { cb(lsGet(LS.ANNOUNCEMENTS, []).slice().reverse()); }
+          );
+        } catch (e) { cb(lsGet(LS.ANNOUNCEMENTS, []).slice().reverse()); return function () {}; }
+      } else {
+        cb(lsGet(LS.ANNOUNCEMENTS, []).slice().reverse());
+        return function () {};
       }
     },
   }

@@ -941,6 +941,32 @@ tbody tr:hover { background: var(--color-primary-soft); }
   }
 }
 
+/* ── Compact centered popup for confirm / note modals on mobile ── */
+@media (max-width: 768px) {
+  #confirm-modal,
+  #note-modal {
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  #confirm-modal .modal,
+  #note-modal .modal {
+    width: 100%;
+    max-width: 360px;
+    height: auto !important;
+    max-height: 80vh;
+    border-radius: 16px;
+    animation: modal-pop 0.2s ease both;
+  }
+
+  #confirm-modal .modal-body,
+  #note-modal .modal-body {
+    flex: 0 0 auto;
+    overflow-y: auto;
+  }
+}
+
 /* --------------------------------------------------------------------------
    17. TOAST
    -------------------------------------------------------------------------- */
