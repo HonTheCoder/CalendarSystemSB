@@ -3888,14 +3888,247 @@ function initSystemSettings() {
 }
 
 // ---------------------------------------------------------------------------
+// Committee Combobox (shared — works on both admin & user pages)
+// ---------------------------------------------------------------------------
+
+const SBP_COMMITTEES = [
+  "COMMITTEE ON LAWS, JUSTICE, OVERSIGHT, GOOD GOVERNANCE, AND ACCOUNTABILITY",
+  "COMMITTEE ON EDUCATION",
+  "COMMITTEE ON GENDER AND DEVELOPMENT",
+  "COMMITTEE ON HUMAN RIGHTS",
+  "COMMITTEE ON WOMEN",
+  "COMMITTEE ON TRADE, COMMERCE AND INDUSTRY",
+  "COMMITTEE ON ECONOMIC ENTERPRISE AND SLAUGHTERHOUSE",
+  "COMMITTEE ON WAYS AND MEANS",
+  "COMMITTEE ON COMMUNICATION",
+  "COMMITTEE ON GENERAL SERVICES",
+  "COMMITTEE ON ENERGY",
+  "COMMITTEE ON LAND USE",
+  "COMMITTEE ON PUBLIC ETHICS",
+  "COMMITTEE ON TOURISM",
+  "COMMITTEE ON SCIENCE AND TECHNOLOGY, SISTERHOOD",
+  "COMMITTEE ON RULES",
+  "COMMITTEE ON HOUSING",
+  "COMMITTEE ON CULTURE AND THE ARTS",
+  "COMMITTEE ON AGRICULTURE",
+  "COMMITTEE ON FINANCE, BUDGET AND APPROPRIATION",
+  "COMMITTEE ON INFRASTRUCTURE AND PUBLIC WORKS",
+  "COMMITTEE ON ENVIRONMENTAL PROTECTION AND NATURAL RESOURCES",
+  "COMMITTEE ON DISASTER RISK REDUCTION AND MANAGEMENT/CLIMATE CHANGE",
+  "COMMITTEE ON FAMILY",
+  "COMMITTEE ON HEALTH, SANITATION AND NUTRITION",
+  "COMMITTEE ON SENIOR CITIZEN",
+  "COMMITTEE ON SOLO PARENTS",
+  "COMMITTEE ON PERSONS WITH DISABILITY",
+  "COMMITTEE ON MARKET",
+  "COMMITTEE ON PEACE AND ORDER, AND PUBLIC SAFETY",
+  "COMMITTEE ON TRANSPORTATION",
+  "COMMITTEE ON LABOR AND EMPLOYMENT, MIGRANT WORKERS (OFW)",
+  "COMMITTEE ON GAMES AND AMUSEMENT",
+  "COMMITTEE ON SOCIAL SERVICES",
+  "COMMITTEE ON ACCREDITATION",
+  "COMMITTEE ON COOPERATIVE",
+  "COMMITTEE ON BARANGAY AFFAIRS",
+  "COMMITTEE ON YOUTH AND SPORTS DEVELOPMENT",
+];
+
+function initCommitteeCombobox() {
+  const input    = document.getElementById("meeting-committee");
+  const dropdown = document.getElementById("committee-dropdown");
+  const arrow    = document.querySelector(".committee-combo-arrow");
+  if (!input || !dropdown) return;
+
+  let activeIndex = -1;
+
+  function renderList(filter) {
+    const q = (filter || "").trim().toLowerCase();
+    const matches = q
+      ? SBP_COMMITTEES.filter(c => c.toLowerCase().includes(q))
+      : SBP_COMMITTEES;
+
+    if (!matches.length) {
+      dropdown.innerHTML = `<li class="committee-dropdown-empty">No matching committee found</li>`;
+    } else {
+      dropdown.innerHTML = matches.map((c, i) => {
+        const highlighted = q
+          ? c.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")})`, "gi"),
+              `<mark class="committee-match">$1</mark>`)
+          : c;
+        return `<li class="committee-dropdown-item" role="option" data-value="${c}" data-idx="${i}">${highlighted}</li>`;
+      }).join("");
+    }
+    activeIndex = -1;
+    syncActive();
+  }
+
+  function syncActive() {
+    const items = dropdown.querySelectorAll(".committee-dropdown-item");
+    items.forEach((el, i) => el.classList.toggle("committee-dropdown-active", i === activeIndex));
+    if (activeIndex >= 0 && items[activeIndex]) {
+      items[activeIndex].scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function openDropdown() {
+    renderList(input.value);
+    dropdown.style.display = "block";
+    arrow.classList.add("open");
+  }
+
+  function closeDropdown() {
+    dropdown.style.display = "none";
+    arrow.classList.remove("open");
+    activeIndex = -1;
+  }
+
+  function selectValue(val) {
+    input.value = val;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    closeDropdown();
+    input.focus();
+  }
+
+  input.addEventListener("focus", () => openDropdown());
+  input.addEventListener("input", () => renderList(input.value));
+
+  input.addEventListener("keydown", e => {
+    const items = dropdown.querySelectorAll(".committee-dropdown-item");
+    if (dropdown.style.display === "none") { openDropdown(); return; }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, items.length - 1);
+      syncActive();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      syncActive();
+    } else if (e.key === "Enter") {
+      if (activeIndex >= 0 && items[activeIndex]) {
+        e.preventDefault();
+        selectValue(items[activeIndex].dataset.value);
+      }
+    } else if (e.key === "Escape") {
+      closeDropdown();
+    }
+  });
+
+  dropdown.addEventListener("mousedown", e => {
+    const item = e.target.closest(".committee-dropdown-item");
+    if (item) { e.preventDefault(); selectValue(item.dataset.value); }
+  });
+
+  arrow.addEventListener("mousedown", e => {
+    e.preventDefault();
+    if (dropdown.style.display === "none") { input.focus(); openDropdown(); }
+    else closeDropdown();
+  });
+
+  document.addEventListener("click", e => {
+    if (!input.closest(".committee-combo-wrap").contains(e.target)) closeDropdown();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// System Maintenance (admin-only)
+// ---------------------------------------------------------------------------
+
+function initSystemMaintenance() {
+  const purgeBtn     = document.getElementById("sysdata-purge-junk-btn");
+  const clearNotifsBtn = document.getElementById("sysdata-clear-notifs-btn");
+
+  if (purgeBtn) {
+    purgeBtn.addEventListener("click", async () => {
+      const safeMeetings = (typeof meetings !== "undefined" && Array.isArray(meetings)) ? meetings : [];
+      const junk = safeMeetings.filter(m => m.status === "Rejected" || m.status === "Cancelled");
+      if (!junk.length) { showToast("No rejected or cancelled records found.", "info"); return; }
+
+      openConfirmModal(
+        "Purge Rejected & Cancelled Records",
+        `This will <strong>permanently delete ${junk.length} record${junk.length !== 1 ? "s" : ""}</strong> (Rejected &amp; Cancelled) from Firebase.<br><br>
+        <span style="color:var(--color-success);font-weight:600">✓ Approved and Pending meetings are NOT affected.</span><br>
+        This action cannot be undone.`,
+        async () => {
+          let count = 0, errors = 0;
+          for (const m of junk) {
+            try {
+              if (window.db) {
+                await window.db.collection("meetings").doc(m.id).delete();
+              } else {
+                // Fallback: remove from local array
+                const idx = meetings.indexOf(m);
+                if (idx > -1) meetings.splice(idx, 1);
+              }
+              count++;
+            } catch (err) {
+              console.error("Purge error for", m.id, err);
+              errors++;
+            }
+          }
+          if (typeof fetchAllData === "function") await fetchAllData();
+          if (typeof renderAdminMeetingsTable === "function") renderAdminMeetingsTable();
+          if (typeof renderCalendar === "function") renderCalendar();
+          if (typeof updateStatistics === "function") updateStatistics();
+          if (typeof renderDashboardCharts === "function") renderDashboardCharts();
+
+          if (errors > 0) {
+            showToast(`Purged ${count} record${count !== 1 ? "s" : ""}. ${errors} failed — check console.`, "warning");
+          } else {
+            showToast(`Purged ${count} record${count !== 1 ? "s" : ""} successfully.`, "success");
+          }
+        }
+      );
+    });
+  }
+
+  if (clearNotifsBtn) {
+    clearNotifsBtn.addEventListener("click", () => {
+      openConfirmModal(
+        "Clear All Notifications",
+        "This will clear the local notification history for this browser. Firebase data is not affected.",
+        () => {
+          try {
+            // Clear all sbp notification keys from localStorage
+            Object.keys(localStorage).forEach(k => {
+              if (k.startsWith("sbp_notif") || k.includes("NOTIFICATIONS") || k.includes("notifications")) {
+                localStorage.removeItem(k);
+              }
+            });
+            // Also try STORAGE_KEYS if defined
+            if (typeof STORAGE_KEYS !== "undefined" && STORAGE_KEYS.NOTIFICATIONS) {
+              localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify([]));
+            }
+          } catch(e) {}
+          showToast("Notification history cleared.", "success");
+          const badge = document.getElementById("notif-badge");
+          const list  = document.getElementById("notif-list");
+          if (badge) badge.textContent = "";
+          if (list)  list.innerHTML = `<div class="notif-empty">No notifications yet.</div>`;
+        }
+      );
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   if (page === "login") initLoginPage();
-  else if (page === "admin") initAdminPage();
+  else if (page === "admin") { initAdminPage(); initSystemMaintenance(); }
   else if (page === "user") initUserPage();
+
+  // Committee combobox — runs on both admin & user pages
+  if (page === "admin" || page === "user") {
+    // Wait for the meeting modal to exist (it's inline in HTML, so immediate)
+    initCommitteeCombobox();
+    // Re-init if the modal gets re-created dynamically
+    const mo = document.getElementById("meeting-modal");
+    if (mo) {
+      new MutationObserver(() => initCommitteeCombobox()).observe(mo, { childList: true, subtree: true });
+    }
+  }
 });
 
 // ===========================================================================

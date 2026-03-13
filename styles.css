@@ -1720,3 +1720,98 @@ body[data-page="login"] {
 .calendar-dot-cancelled { background: #9ca3af; }
 .calendar-dot-other     { background: #3b82f6; }
 .calendar-dot-full      { background: #dc2626; width: 100%; height: 3px; border-radius: 2px; margin-top: 1px; }
+/* ─── Committee Combobox ──────────────────────────────────────── */
+.committee-combo-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.committee-combo-input {
+  flex: 1;
+  padding-right: 36px !important;
+}
+.committee-combo-arrow {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color 0.15s, transform 0.2s;
+}
+.committee-combo-arrow:hover { color: var(--color-text); }
+.committee-combo-arrow.open svg {
+  transform: rotate(180deg);
+}
+.committee-combo-arrow svg { transition: transform 0.2s; }
+
+.committee-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 500;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06);
+  max-height: 220px;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  scroll-behavior: smooth;
+}
+.committee-dropdown::-webkit-scrollbar { width: 5px; }
+.committee-dropdown::-webkit-scrollbar-track { background: transparent; }
+.committee-dropdown::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+
+.committee-dropdown-item {
+  padding: 9px 14px;
+  font-size: 0.82rem;
+  color: var(--color-text);
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.1s;
+  border-radius: 0;
+}
+.committee-dropdown-item:hover,
+.committee-dropdown-active {
+  background: var(--color-surface-2, rgba(37,99,235,0.07));
+  color: var(--brand-blue, #2563EB);
+}
+.committee-dropdown-empty {
+  padding: 12px 14px;
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  font-style: italic;
+}
+mark.committee-match {
+  background: rgba(245,163,26,0.22);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+  font-weight: 700;
+}
+
+/* ─── Historical meetings (visual fading) ────────────────────── */
+.meeting-historical {
+  opacity: 0.58;
+  filter: grayscale(25%);
+  border-style: dashed !important;
+}
+.badge-historical {
+  background: var(--color-surface-2, #f3f4f6);
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
