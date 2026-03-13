@@ -514,23 +514,16 @@ function meetingStatusBadge(status) {
 }
 
 function statusColorForCalendar(status, isAdminCreated, isMine) {
-  if (isMine) {
-    // User's own meetings — gold highlight regardless of who scheduled
-    const mineMap = {
-      "Approved": "calendar-badge calendar-badge-mine-approved",
-      "Pending":  "calendar-badge calendar-badge-mine-pending",
-      "Cancellation Requested": "calendar-badge calendar-badge-mine-pending",
-    };
-    return mineMap[status] || "calendar-badge calendar-badge-mine-approved";
-  }
-  // Everyone else's meetings — simple green/yellow/grey, muted opacity via CSS
+  // ALL meetings: green=approved, yellow=pending, grey=rest.
+  // isMine+adminCreated → purple outline via calendar-badge-is-admin-mine
+  // isMine only        → yellow outline via calendar-badge-is-mine
   const map = {
     "Approved": "calendar-badge calendar-badge-approved",
     "Pending": "calendar-badge calendar-badge-pending",
     "Cancelled": "calendar-badge calendar-badge-cancelled",
     "Rejected": "calendar-badge calendar-badge-cancelled",
     "Cancellation Requested": "calendar-badge calendar-badge-pending",
-    "Done": "calendar-badge calendar-badge-cancelled",
+    "Done": "calendar-badge calendar-badge-done",
   };
   return map[status] || "calendar-badge calendar-badge-other";
 }
@@ -564,6 +557,20 @@ function roleChipClass(role) {
 let users = [];
 let meetings = [];
 let historyEntries = [];
+
+// Bug Fix #1: Expose live references to window so inline chart scripts in
+// admin.html / user.html can always read the current arrays via window.meetings
+// and window.users without breaking when the let variable is reassigned.
+Object.defineProperty(window, "meetings", {
+  get: function () { return meetings; },
+  set: function (v) { meetings = v; },
+  configurable: true,
+});
+Object.defineProperty(window, "users", {
+  get: function () { return users; },
+  set: function (v) { users = v; },
+  configurable: true,
+});
 let calendarYear, calendarMonth;
 let unsubscribeMeetings = null;
 let unsubscribeHistory = null;
@@ -1964,7 +1971,7 @@ function handleMyMeetingsClick(e) {
     openNoteModal(
       within24h ? "Cancel Meeting" : "Request Cancellation",
       promptHtml,
-      within24h ? "Cancel Meeting Now" : "Send to Admin for Review",
+      true, // required: cancellation reason is mandatory
       (reason) => {
         if (!reason || !reason.trim()) return "Please provide a reason for cancellation.";
 
@@ -2131,10 +2138,17 @@ function renderCalendar() {
     });
 
     const activeMeetings = dayMeetings
-      .filter(m => ["Approved","Pending","Cancellation Requested"].includes(m.status))
+      .filter(m => ["Approved","Pending","Cancellation Requested","Done"].includes(m.status))
       .sort((a, b) => (a.timeStart || "").localeCompare(b.timeStart || ""));
 
     const MAX_BADGES = 2;
+
+    // Compute current Manila time in minutes for "ongoing" detection
+    const _manilaMinutes = (() => {
+      const n = getManilaNow();
+      return n.getHours() * 60 + n.getMinutes();
+    })();
+
     activeMeetings.slice(0, MAX_BADGES).forEach(m => {
       const isAdminCreated = m.createdByRole === ROLES.ADMIN;
       // "Mine" = the logged-in user created this meeting OR is the assigned councilor/researcher
@@ -2143,12 +2157,31 @@ function renderCalendar() {
         m.councilor === currentUser.name ||
         m.researcher === currentUser.name
       );
+
+      // Ongoing = today + Approved + current time falls within the meeting window
+      const isOngoing = isToday &&
+        m.status === "Approved" &&
+        m.timeStart &&
+        (() => {
+          const start = minutesFromTimeStr(m.timeStart);
+          const end   = start + (m.durationHours || SLOT_DURATION_HOURS) * 60;
+          return _manilaMinutes >= start && _manilaMinutes < end;
+        })();
+
       const badge = document.createElement("div");
-      badge.className = statusColorForCalendar(m.status, isAdminCreated, isMine);
-      if (isMine) badge.classList.add("calendar-badge-is-mine"); // extra hook for CSS ring
+      if (isOngoing) {
+        badge.className = "calendar-badge calendar-badge-ongoing";
+      } else {
+        badge.className = statusColorForCalendar(m.status, isAdminCreated, isMine);
+        if (isMine && isAdminCreated) {
+          badge.classList.add("calendar-badge-is-admin-mine"); // purple outline — admin scheduled for me
+        } else if (isMine) {
+          badge.classList.add("calendar-badge-is-mine"); // yellow outline — I scheduled this
+        }
+      }
       const timeLabel = m.timeStart ? `${formatTime12h(minutesFromTimeStr(m.timeStart))} ` : "";
       badge.textContent = timeLabel + (m.eventName || "Meeting");
-      badge.title = `${h(m.eventName)} — ${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)} [${m.status}]${isMine ? " · Your meeting" : ""}${isAdminCreated ? " · Admin scheduled" : ""}`;
+      badge.title = `${h(m.eventName)} — ${formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS)} [${m.status}]${isOngoing ? " · NOW ONGOING" : ""}${isMine ? " · Your meeting" : ""}${isAdminCreated ? " · Admin scheduled" : ""}`;
       cell.appendChild(badge);
     });
 
@@ -2225,8 +2258,8 @@ function renderCalendar() {
     if (isPast || isHoliday || !isWorkday) {
       cell.classList.add("calendar-cell-muted");
       cell.disabled = true;
-      // Still allow clicking past days or holidays to VIEW schedule
-      if ((dayMeetings.length || dayHistory.length || isHoliday) && !isPast) {
+      // Always allow clicking past days/holidays to VIEW schedule if there's anything to show
+      if (dayMeetings.length || dayHistory.length || isHoliday) {
         cell.disabled = false;
         cell.classList.remove("calendar-cell-muted");
         cell.classList.add("calendar-cell-readonly");
@@ -2331,7 +2364,13 @@ function openDayScheduleModal(isoDate, readOnly) {
           const c = STATUS_STYLE[m.status] || STATUS_STYLE["Cancelled"];
           const timeRange = m.timeStart ? formatTimeRange(m.timeStart, m.durationHours || SLOT_DURATION_HOURS) : "—";
           const isAdminCreated = m.createdByRole === ROLES.ADMIN;
-          return `<div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${isAdminCreated ? "#1d4ed8" : c.border};border-radius:8px;padding:10px 12px">
+          const _isMine = currentUser && (
+            m.createdBy === currentUser.username ||
+            m.councilor === currentUser.name ||
+            m.researcher === currentUser.name
+          );
+          const _mineOutline = _isMine ? ";outline:2px solid #F5A31A;outline-offset:1px" : "";
+          return `<div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${isAdminCreated ? "#1d4ed8" : c.border};border-radius:8px;padding:10px 12px${_mineOutline}">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
               <div style="min-width:0">
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -2939,6 +2978,26 @@ function updateStatistics() {
       cta.style.display = "none";
       none.style.display = "inline";
       if (pendingCard) pendingCard.classList.remove("dash-stat-card-has-alert");
+    }
+  }
+
+  // User page — pulse the pending card based on that user's own pending meetings
+  const userPendingCard = $("#user-stat-pending-card");
+  if (userPendingCard) {
+    const cu2 = getCurrentUser();
+    let userPending = 0;
+    if (cu2) {
+      userPending = meetings.filter(m => {
+        if (m.status !== "Pending") return false;
+        if (cu2.role === ROLES.COUNCILOR)  return m.councilor === cu2.name  || m.createdBy === cu2.username;
+        if (cu2.role === ROLES.RESEARCHER) return m.researcher === cu2.name || m.createdBy === cu2.username;
+        return m.createdBy === cu2.username;
+      }).length;
+    }
+    if (userPending > 0) {
+      userPendingCard.classList.add("dash-stat-card-has-alert");
+    } else {
+      userPendingCard.classList.remove("dash-stat-card-has-alert");
     }
   }
 
@@ -3815,7 +3874,7 @@ function initSystemSettings() {
             if (window.api && window.api.updateMeetingStatus) {
               await window.api.updateMeetingStatus(m.id, "Done", "Auto-marked Done by admin.");
             } else {
-              m.status = "Done"; m.adminNote = "Auto-marked Done by admin."; count++;
+              m.status = "Done"; m.adminNote = "Auto-marked Done by admin.";
             }
             count++;
           } catch {}
@@ -3951,12 +4010,15 @@ function renderUserAnnouncements(list) {
   }
   el.innerHTML = sorted.map(a => _renderAnnCard(a, false)).join("");
 
-  // Check for new (unseen) announcements
+  // Show "New" badge if any announcement arrived after last time user visited Announcements section
   try {
     const lastSeen = parseInt(localStorage.getItem("sbp_ann_seen") || "0", 10);
     const hasNew = sorted.some(a => a.createdAt && new Date(a.createdAt).getTime() > lastSeen);
     const badge = document.getElementById("new-ann-badge");
-    if (badge) badge.style.display = hasNew ? "inline-flex" : "none";
+    if (badge) {
+      badge.textContent = "New";
+      badge.style.display = hasNew ? "inline-flex" : "none";
+    }
   } catch(e) {}
 }
 
@@ -4114,14 +4176,8 @@ function initUserAnnouncements() {
     renderUserAnnouncements(list);
     renderUserDashAnnouncements(list);
 
-    // ── Update sidebar "New" badge ──────────────────────────────────────────
-    const badge = document.getElementById("new-ann-badge");
-    if (badge && list.length > 0) {
-      badge.style.display = "inline-flex";
-      badge.textContent   = list.length > 9 ? "9+" : String(list.length);
-    } else if (badge) {
-      badge.style.display = "none";
-    }
+    // ── Update sidebar "New" badge — driven by unseen timestamp, not raw count ──
+    // renderUserAnnouncements() handles this correctly; no override needed here.
 
     // ── Push bell notification when a new announcement arrives in real-time ──
     // Only fire after initial load (when _prevCount is already set)
@@ -4223,6 +4279,7 @@ function initUserAnnouncements() {
   // ── Day Schedule Drawer ───────────────────────────────────────────────────
 
   window.openDayDrawer = function (isoDate, canBook) {
+    const currentUser = (typeof getCurrentUser === "function") ? getCurrentUser() : null;
     const d = new Date(isoDate + "T00:00:00");
     const dateDisplay = d.toLocaleDateString("en-PH", {
       weekday: "long", year: "numeric", month: "long", day: "numeric"
@@ -4314,7 +4371,7 @@ function initUserAnnouncements() {
              const within24h = createdAt && (new Date() - createdAt) < 24 * 60 * 60 * 1000;
              const cancelLabel = within24h ? "Cancel (Free)" : "Request Cancel";
              return `
-               <div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${c.border};border-radius:10px;padding:12px 14px">
+               <div style="background:${c.bg};border:1px solid ${c.border};border-left:4px solid ${c.border};border-radius:10px;padding:12px 14px${belongsToMe ? ';outline:2px solid #F5A31A;outline-offset:1px' : ''}">
                  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
                    <div style="min-width:0">
                      <div style="font-weight:700;font-size:0.88rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
@@ -4528,11 +4585,14 @@ function initUserAnnouncements() {
         <div>
           <label class="field-label" for="db-type">Type of Meeting *</label>
           <select id="db-type" class="field">
-            <option value="Regular Session">Regular Session</option>
-            <option value="Special Session">Special Session</option>
+            <option value="Committee Meeting">Committee Meeting</option>
+            <option value="Committee Hearing">Committee Hearing</option>
+            <option value="Committee Deliberation">Committee Deliberation</option>
+            <option value="Public Meeting">Public Meeting</option>
+            <option value="Consultative Meeting">Consultative Meeting</option>
             <option value="Others">Others (Please Specify)</option>
           </select>
-          <input id="db-type-other" class="field" placeholder="Please specify..."
+          <input id="db-type-other" class="field" placeholder="Please specify type…"
                  style="display:none;margin-top:8px" />
         </div>
         <div>
@@ -4543,7 +4603,7 @@ function initUserAnnouncements() {
             <option value="ABC Hall">ABC Hall</option>
             <option value="Others">Others (Please Specify)</option>
           </select>
-          <input id="db-venue-other" class="field" placeholder="Please specify..."
+          <input id="db-venue-other" class="field" placeholder="Please specify venue…"
                  style="display:none;margin-top:8px" />
         </div>
         <div>

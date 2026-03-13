@@ -6,6 +6,7 @@
     <!-- Dark mode anti-flicker: must run before any CSS renders -->
     <script>if(localStorage.getItem('sbp_dark')==='1')document.documentElement.setAttribute('data-theme','dark');</script>
     <title>SB Polangui | User Dashboard</title>
+    <link rel="icon" type="image/x-icon" href="images/SB_logo.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -39,6 +40,15 @@
             <span>Dashboard</span>
           </a>
 
+          <div class="sidebar-nav-label" style="margin-top:14px">Communications</div>
+          <a href="#" class="nav-link" data-section="announcements">
+            <span class="nav-link-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+            </span>
+            <span>Announcements</span>
+            <span class="nav-notif-badge" id="new-ann-badge" style="display:none">New</span>
+          </a>
+
           <div class="sidebar-nav-label" style="margin-top:14px">Meetings</div>
           <a href="#" class="nav-link" data-section="calendar">
             <span class="nav-link-icon">
@@ -51,15 +61,8 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             </span>
             <span>My Meetings</span>
-          </a>
-
-          <div class="sidebar-nav-label" style="margin-top:14px">Communications</div>
-          <a href="#" class="nav-link" data-section="announcements">
-            <span class="nav-link-icon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
-            </span>
-            <span>Announcements</span>
-            <span class="nav-notif-badge" id="new-ann-badge" style="display:none">New</span>
+            <!-- Bug Fix #4: pending-badge now exists on user page so updateNotificationBadge() can update it -->
+            <span class="nav-notif-badge" id="pending-badge" style="display:none">0</span>
           </a>
         </nav>
 
@@ -146,7 +149,7 @@
                   </div>
                 </div>
               </div>
-              <div class="dash-stat-card">
+              <div class="dash-stat-card" id="user-stat-pending-card">
                 <div class="stat-accent-bar stat-accent-amber"></div>
                 <div class="stat-card-inner">
                   <div class="stat-card-body">
@@ -283,10 +286,12 @@
                     Your Meetings
                   </span>
                   <!-- Others' meetings - muted appearance -->
+                  <span class="calendar-legend-item"><span class="icon-dot icon-dot-blue-dark"></span> Ongoing</span>
                   <span class="calendar-legend-item"><span class="icon-dot icon-dot-green" style="opacity:0.55"></span> Others' Approved</span>
                   <span class="calendar-legend-item"><span class="icon-dot icon-dot-yellow" style="opacity:0.55"></span> Pending</span>
-                  <span class="calendar-legend-item"><span class="icon-dot icon-dot-red"></span> Cancelled / Rejected</span>
+                  <span class="calendar-legend-item"><span class="icon-dot icon-dot-purple"></span> Admin Scheduled (Mine)</span>
                   <span class="calendar-legend-item"><span class="icon-dot" style="background:#fcd34d;border:1px solid #f59e0b"></span> PH Holiday</span>
+                  <span class="calendar-legend-item"><span class="icon-dot icon-dot-blue" style="opacity:0.85"></span> Done</span>
                   <span class="calendar-legend-item"><span style="width:8px;height:8px;border-radius:3px;background:#dc2626;display:inline-block;flex-shrink:0"></span> Full</span>
                 </div>
               </div>
@@ -357,7 +362,12 @@
                     </tr>
                   </thead>
                   <tbody id="my-meetings-body">
-                    <tr><td colspan="6" class="text-muted" style="text-align:center;padding:24px">No meetings yet.</td></tr>
+                    <tr><td><span class="skeleton" style="display:inline-block;height:11px;width:60%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:45%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:70%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:50%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:65%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:55%;border-radius:4px"></span></td></tr>
+                    <tr><td><span class="skeleton" style="display:inline-block;height:11px;width:45%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:70%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:50%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:65%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:55%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:40%;border-radius:4px"></span></td></tr>
+                    <tr><td><span class="skeleton" style="display:inline-block;height:11px;width:70%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:50%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:65%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:55%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:40%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:60%;border-radius:4px"></span></td></tr>
+                    <tr><td><span class="skeleton" style="display:inline-block;height:11px;width:50%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:65%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:55%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:40%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:60%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:45%;border-radius:4px"></span></td></tr>
+                    <tr><td><span class="skeleton" style="display:inline-block;height:11px;width:65%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:55%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:40%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:60%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:45%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:70%;border-radius:4px"></span></td></tr>
+                    <tr><td><span class="skeleton" style="display:inline-block;height:11px;width:55%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:40%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:60%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:45%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:70%;border-radius:4px"></span></td><td><span class="skeleton" style="display:inline-block;height:11px;width:50%;border-radius:4px"></span></td></tr>
                   </tbody>
                 </table>
               </div>
@@ -376,10 +386,10 @@
               </div>
             </div>
             <div id="user-announce-list" style="display:flex;flex-direction:column;gap:14px">
-              <div class="empty-state" style="padding:64px 20px">
-                <svg class="empty-state-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
-                <p>No announcements yet.</p>
-              </div>
+              <div class="skeleton-announce-item"><div class="skeleton-announce-header"><span class="skeleton skeleton-announce-avatar"></span><div class="skeleton-announce-meta"><span class="skeleton skeleton-announce-title" style="width:55%"></span><span class="skeleton skeleton-announce-date"></span></div></div><span class="skeleton skeleton-announce-body"></span><span class="skeleton skeleton-announce-body-short"></span></div>
+              <div class="skeleton-announce-item"><div class="skeleton-announce-header"><span class="skeleton skeleton-announce-avatar"></span><div class="skeleton-announce-meta"><span class="skeleton skeleton-announce-title" style="width:55%"></span><span class="skeleton skeleton-announce-date"></span></div></div><span class="skeleton skeleton-announce-body"></span><span class="skeleton skeleton-announce-body-short"></span></div>
+              <div class="skeleton-announce-item"><div class="skeleton-announce-header"><span class="skeleton skeleton-announce-avatar"></span><div class="skeleton-announce-meta"><span class="skeleton skeleton-announce-title" style="width:55%"></span><span class="skeleton skeleton-announce-date"></span></div></div><span class="skeleton skeleton-announce-body"></span><span class="skeleton skeleton-announce-body-short"></span></div>
+              <div class="skeleton-announce-item"><div class="skeleton-announce-header"><span class="skeleton skeleton-announce-avatar"></span><div class="skeleton-announce-meta"><span class="skeleton skeleton-announce-title" style="width:55%"></span><span class="skeleton skeleton-announce-date"></span></div></div><span class="skeleton skeleton-announce-body"></span><span class="skeleton skeleton-announce-body-short"></span></div>
             </div>
           </div>
 
@@ -441,11 +451,21 @@
             <div class="form-grid-2">
               <div>
                 <label for="meeting-councilor" class="field-label">Councilor *</label>
-                <input id="meeting-councilor" class="field" required placeholder="Full name" />
+                <!-- Bug Fix #2: select element required by _setupCouncilorResearcherFields() -->
+                <select id="meeting-councilor-select" class="field" style="display:none">
+                  <option value="">— Select Councilor —</option>
+                  <option value="N/A">N/A (No Councilor)</option>
+                </select>
+                <input id="meeting-councilor" class="field" placeholder="Full name" />
               </div>
               <div>
                 <label for="meeting-researcher" class="field-label">Researcher *</label>
-                <input id="meeting-researcher" class="field" required placeholder="Full name" />
+                <!-- Bug Fix #2: select element required by _setupCouncilorResearcherFields() -->
+                <select id="meeting-researcher-select" class="field" style="display:none">
+                  <option value="">— Select Researcher —</option>
+                  <option value="N/A">N/A (No Researcher)</option>
+                </select>
+                <input id="meeting-researcher" class="field" placeholder="Full name" />
               </div>
             </div>
 
@@ -472,7 +492,7 @@
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
               Office hours: Mon–Fri, 8:00 AM – 5:00 PM
               <span id="meeting-end-preview" class="meeting-end-preview-val"></span>
-              <div id="meeting-duration-hint" style="display:none"></div>
+              <!-- Bug Fix #3: removed duplicate id="meeting-duration-hint" that was hidden here; the real one is in the Duration row above -->
               <div class="calendar-lunch-block" style="display:none"></div>
             </div>
 
@@ -591,6 +611,37 @@
       </a>
     </nav>
 
+
+    <script>
+      // Clear my-meetings and announcements skeletons when real data populates them
+      (function() {
+        function clearTableSkeleton(id) {
+          var el = document.getElementById(id);
+          if (el && el.querySelector('.skeleton')) el.innerHTML = '';
+        }
+        // Patch the table rendering — clear skeleton on first real write
+        var _origInnerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+        ['my-meetings-body', 'user-announce-list'].forEach(function(id) {
+          var observed = false;
+          Object.defineProperty(document, '_sbpSkCleared_' + id, { value: false, writable: true });
+        });
+        // Simpler: clear skeletons as soon as app.js sets content
+        var _bodyObserver = new MutationObserver(function(muts) {
+          muts.forEach(function(m) {
+            var t = m.target;
+            if ((t.id === 'my-meetings-body' || t.id === 'user-announce-list') && t.querySelector('.skeleton')) {
+              t.innerHTML = '';
+            }
+          });
+        });
+        document.addEventListener('DOMContentLoaded', function() {
+          ['my-meetings-body','user-announce-list'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) _bodyObserver.observe(el, { childList: true });
+          });
+        });
+      })();
+    </script>
     <!-- Scripts -->
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>

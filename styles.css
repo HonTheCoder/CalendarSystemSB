@@ -158,13 +158,16 @@
 [data-theme="dark"] .badge-rejected    { background: rgba(220,38,38,0.2);  color: #F87171; }
 [data-theme="dark"] .badge-info        { background: rgba(59,130,246,0.2); color: #93C5FD; }
 [data-theme="dark"] .badge-warning     { background: rgba(249,115,22,0.2); color: #FDBA74; }
-[data-theme="dark"] .calendar-badge-approved  { background: rgba(22,163,74,0.18);  color: #4ADE80; border-color: rgba(22,163,74,0.35); opacity: 0.72; }
-[data-theme="dark"] .calendar-badge-pending   { background: rgba(245,163,26,0.18); color: #FCD34D; border-color: rgba(245,163,26,0.35); opacity: 0.72; }
+[data-theme="dark"] .calendar-badge-approved  { background: #16a34a; color: #fff; border-color: #15803d; opacity: 1; font-weight: 600; }
+[data-theme="dark"] .calendar-badge-pending   { background: rgba(245,163,26,0.18); color: #FCD34D; border-color: rgba(245,163,26,0.35); opacity: 0.95; }
 [data-theme="dark"] .calendar-badge-cancelled { background: rgba(107,114,128,0.15); color: #9CA3AF; border-color: rgba(107,114,128,0.3); opacity: 0.5; }
 [data-theme="dark"] .calendar-badge-other     { background: rgba(107,114,128,0.15); color: #9CA3AF; border-color: rgba(107,114,128,0.3); opacity: 0.55; }
-[data-theme="dark"] .calendar-badge-mine-approved { background: linear-gradient(135deg, #D97706, #B45309); color: #fff; opacity: 1; border: none; box-shadow: 0 0 0 1.5px rgba(245,163,26,0.7), 0 2px 8px rgba(245,163,26,0.4); }
-[data-theme="dark"] .calendar-badge-mine-pending  { background: rgba(245,163,26,0.15); color: #FCD34D; border-color: #F59E0B; opacity: 1; }
-[data-theme="dark"] .calendar-legend-mine { color: #FCD34D; background: rgba(245,163,26,0.12); border-color: rgba(245,163,26,0.4); }
+[data-theme="dark"] .calendar-badge-mine-approved { background: #16a34a; color: #fff; border-color: #15803d; opacity: 1; font-weight: 600; }
+[data-theme="dark"] .calendar-badge-done { background: rgba(59,130,246,0.15); color: #93C5FD; border-color: rgba(59,130,246,0.35); opacity: 0.85; }
+[data-theme="dark"] .calendar-badge-mine-pending  { background: rgba(245,163,26,0.18); color: #FCD34D; border-color: #F59E0B; opacity: 1; }
+[data-theme="dark"] .calendar-badge-is-mine { outline: 2px solid #F5A31A; outline-offset: 1px; }
+[data-theme="dark"] .calendar-badge-is-admin-mine { outline: 2px solid #A78BFA; outline-offset: 1px; }
+[data-theme="dark"] .calendar-legend-mine { color: #4ADE80; background: rgba(22,163,74,0.12); border-color: rgba(22,163,74,0.4); outline: 2px solid rgba(245,163,26,0.7); outline-offset: 1px; }
 [data-theme="dark"] .auth-page         { background: radial-gradient(circle at top left, #0B1628, #172038 60%, #0B1628); }
 [data-theme="dark"] .auth-card         { background: rgba(17,30,53,0.98); border-color: var(--color-border); }
 [data-theme="dark"] .auth-header       { border-bottom-color: var(--color-border); }
@@ -649,11 +652,20 @@ tbody tr:hover { background: var(--color-primary-soft); }
   transform: translateY(-1px);
 }
 
+@keyframes today-ring-pulse {
+  0%   { box-shadow: 0 0 0 0px rgba(27,75,138,0.55), 0 0 0 0px rgba(27,75,138,0.2); }
+  60%  { box-shadow: 0 0 0 4px rgba(27,75,138,0.18), 0 0 0 8px rgba(27,75,138,0.06); }
+  100% { box-shadow: 0 0 0 0px rgba(27,75,138,0), 0 0 0 0px rgba(27,75,138,0); }
+}
+
 .calendar-cell-today {
   border-color: var(--brand-blue) !important;
-  border-width: 2px !important;
+  border-width: 3px !important;
   background: var(--color-primary-soft) !important;
-  box-shadow: 0 0 0 2px rgba(27,75,138,0.15);
+  box-shadow: 0 0 0 3px rgba(27,75,138,0.18), inset 0 0 0 1px rgba(27,75,138,0.08);
+  animation: today-ring-pulse 3s ease-out infinite;
+  position: relative;
+  z-index: 1;
 }
 
 .calendar-cell-header { display: flex; align-items: center; justify-content: space-between; gap: 2px; min-height: 22px; }
@@ -661,9 +673,11 @@ tbody tr:hover { background: var(--color-primary-soft); }
 
 .calendar-cell-today .calendar-cell-date {
   background: var(--brand-blue); color: #fff;
-  width: 22px; height: 22px; border-radius: 50%;
+  width: 28px; height: 28px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 0.72rem;
+  font-size: 0.82rem; font-weight: 800;
+  box-shadow: 0 2px 8px rgba(27,75,138,0.35);
+  letter-spacing: -0.01em;
 }
 
 .calendar-holiday-label {
@@ -691,56 +705,78 @@ tbody tr:hover { background: var(--color-primary-soft); }
 }
 
 /* --- OTHERS' MEETINGS: clear green/amber but visually softer --- */
-.calendar-badge-approved  { background: #DCFCE7; color: #15803D; border: 1px solid #86EFAC; opacity: 0.72; }
-.calendar-badge-pending   { background: #FEF9C3; color: #A16207; border: 1px solid #FDE047; opacity: 0.72; }
+/* ALL approved = solid green, ALL pending = yellow, regardless of ownership */
+.calendar-badge-approved  { background: #16A34A; color: #fff; border: 1px solid #15803D; opacity: 1; font-weight: 600; }
+.calendar-badge-pending   { background: #FEF9C3; color: #A16207; border: 1px solid #FDE047; opacity: 0.95; }
 .calendar-badge-cancelled { background: #F3F4F6; color: #9CA3AF; border: 1px solid #E5E7EB; opacity: 0.5; }
+.calendar-badge-done      { background: #DBEAFE; color: #1E40AF; border: 1px solid #93C5FD; opacity: 0.85; font-weight: 500; }
 .calendar-badge-other     { background: #F3F4F6; color: #9CA3AF; border: 1px solid #E5E7EB; opacity: 0.55; }
 .calendar-badge-more      { background: var(--color-border-soft); color: var(--color-text-muted); font-size: 0.57rem; text-align: center; border: 1px dashed var(--color-border); opacity: 1; }
 
-/* --- YOUR OWN MEETINGS: gold, full opacity, glowing ring --- */
-.calendar-badge-mine-approved {
-  background: linear-gradient(135deg, #F5A31A 0%, #EF8C0A 100%);
-  color: #fff;
-  opacity: 1;
-  border: none;
-  box-shadow: 0 0 0 1.5px rgba(245,163,26,0.65), 0 2px 6px rgba(245,163,26,0.4);
-  font-weight: 700;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-}
+/* Kept for backwards compat — no longer used as primary class */
+.calendar-badge-mine-approved { background: #16A34A; color: #fff; border: 1px solid #15803D; opacity: 1; font-weight: 600; }
+.calendar-badge-mine-pending  { background: #FEF9C3; color: #92400E; opacity: 1; border: 1.5px solid #F5A31A; font-weight: 700; }
 
-/* Pending own meeting - gold outline */
-.calendar-badge-mine-pending {
-  background: #FFFBEB;
-  color: #92400E;
-  opacity: 1;
-  border: 1.5px solid #F5A31A;
-  font-weight: 700;
-}
-
-/* Pulse animation on your own meetings */
-@keyframes mine-pulse {
-  0%   { box-shadow: 0 0 0 0   rgba(245,163,26,0.6),  0 2px 6px rgba(245,163,26,0.3); }
-  65%  { box-shadow: 0 0 0 5px rgba(245,163,26,0),    0 2px 6px rgba(245,163,26,0.3); }
-  100% { box-shadow: 0 0 0 0   rgba(245,163,26,0),    0 2px 6px rgba(245,163,26,0.3); }
+/* --- YOUR OWN MEETINGS: yellow glowing outline ring on top of the badge colour --- */
+/* This class is added regardless of status, so the user always spots their own meeting */
+@keyframes mine-outline-pulse {
+  0%   { box-shadow: 0 0 0 0px rgba(245,163,26,0.8), 0 0 0 0px rgba(245,163,26,0.4); }
+  60%  { box-shadow: 0 0 0 3px rgba(245,163,26,0.3), 0 0 0 5px rgba(245,163,26,0); }
+  100% { box-shadow: 0 0 0 0px rgba(245,163,26,0), 0 0 0 0px rgba(245,163,26,0); }
 }
 .calendar-badge-is-mine {
-  animation: mine-pulse 2.6s ease-out infinite;
+  outline: 2px solid #F5A31A;
+  outline-offset: 1px;
+  animation: mine-outline-pulse 2.6s ease-out infinite;
 }
 
+/* Admin-scheduled meeting that belongs to me — purple outline */
+@keyframes admin-mine-outline-pulse {
+  0%   { box-shadow: 0 0 0 0px rgba(139,92,246,0.8), 0 0 0 0px rgba(139,92,246,0.4); }
+  60%  { box-shadow: 0 0 0 3px rgba(139,92,246,0.3), 0 0 0 5px rgba(139,92,246,0); }
+  100% { box-shadow: 0 0 0 0px rgba(139,92,246,0), 0 0 0 0px rgba(139,92,246,0); }
+}
+.calendar-badge-is-admin-mine {
+  outline: 2px solid #8B5CF6;
+  outline-offset: 1px;
+  animation: admin-mine-outline-pulse 2.6s ease-out infinite;
+}
+
+/* Ongoing — today's day cell pulse ring */
+@keyframes ongoing-cell-pulse {
+  0%   { box-shadow: 0 0 0 0px rgba(59,130,246,0.5); }
+  60%  { box-shadow: 0 0 0 4px rgba(59,130,246,0); }
+  100% { box-shadow: 0 0 0 0px rgba(59,130,246,0); }
+}
+.calendar-badge-ongoing {
+  background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  opacity: 1;
+  animation: ongoing-cell-pulse 2s ease-out infinite;
+}
+
+/* dot colours */
+.icon-dot-purple { background: #8B5CF6; }
+.icon-dot-blue-dark { background: #2563EB; }
+
 /* CALENDAR LEGEND */
-.calendar-legend      { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.calendar-legend      { display: flex; gap: 8px 14px; flex-wrap: wrap; align-items: center; }
 .calendar-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.73rem; color: var(--color-text-muted); }
 .icon-dot             { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .icon-dot-yellow      { background: #F59E0B; }
 .icon-dot-green       { background: #16A34A; }
 .icon-dot-red         { background: #DC2626; }
 .icon-dot-gold        { background: linear-gradient(135deg, #F5A31A, #EF8C0A); box-shadow: 0 0 0 1.5px rgba(245,163,26,0.5); }
+.icon-dot-blue        { background: #3B82F6; }
 
 /* "Your Meetings" legend pill */
 .calendar-legend-mine {
   display: flex; align-items: center; gap: 5px; font-size: 0.73rem;
-  color: #92400E; font-weight: 700;
-  background: rgba(245,163,26,0.1); border: 1px solid rgba(245,163,26,0.35);
+  color: #15803D; font-weight: 700;
+  background: rgba(22,163,74,0.1); border: 1px solid rgba(22,163,74,0.35);
+  outline: 2px solid rgba(245,163,26,0.6); outline-offset: 1px;
   padding: 2px 9px; border-radius: 999px;
 }
 
@@ -1510,12 +1546,35 @@ body[data-page="login"] {
   padding: 18px 20px;
   box-shadow: var(--shadow-card);
   border-top: 3px solid var(--brand-gold);
-  transition: transform 0.15s, box-shadow 0.15s, background 0.25s;
+  /* Bug Fix #6: exclude box-shadow from transition so the pulse animation isn't overridden */
+  transition: transform 0.15s, background 0.25s, border-color 0.2s;
 }
 .dash-stat-card:hover              { transform: translateY(-2px); box-shadow: var(--shadow-soft); }
 .dash-stat-card .stat-label        { font-size: 0.7rem; color: var(--color-text-muted); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
 .dash-stat-card .stat-value        { font-size: 2.1rem; font-weight: 800; color: var(--brand-blue); line-height: 1; font-family: var(--font-display); }
 .dash-stat-card .stat-sub          { font-size: 0.7rem; color: var(--color-text-muted); margin-top: 5px; }
+
+/* Pending card — pulse ring when there are items awaiting review */
+@keyframes pending-card-pulse {
+  0%   { box-shadow: var(--shadow-card), 0 0 0 0px rgba(217,119,6,0.55), 0 0 0 0px rgba(217,119,6,0.2); }
+  50%  { box-shadow: var(--shadow-card), 0 0 0 6px rgba(217,119,6,0.18), 0 0 0 12px rgba(217,119,6,0.05); }
+  100% { box-shadow: var(--shadow-card), 0 0 0 0px rgba(217,119,6,0), 0 0 0 0px rgba(217,119,6,0); }
+}
+/* Bug Fix #6: will-change + animation-fill-mode ensures animation isn't dropped */
+.dash-stat-card-has-alert {
+  border-top-color: var(--color-warning) !important;
+  animation: pending-card-pulse 2.4s ease-in-out infinite;
+  animation-fill-mode: both;
+  will-change: box-shadow;
+}
+.dash-stat-card-has-alert .stat-value {
+  color: var(--color-warning) !important;
+}
+[data-theme="dark"] .dash-stat-card-has-alert {
+  animation: pending-card-pulse 2.4s ease-in-out infinite;
+  animation-fill-mode: both;
+  will-change: box-shadow;
+}
 
 .chart-wrap { position: relative; height: 220px; }
 
@@ -1564,6 +1623,18 @@ body[data-page="login"] {
 
 /* ── Mobile calendar: clean compact dot-indicator cells ── */
 @media (max-width: 600px) {
+  /* Legend: 2-column grid so items don't wrap chaotically */
+  .calendar-legend {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 10px;
+    align-items: center;
+  }
+  .calendar-legend-mine {
+    grid-column: 1 / -1; /* "Your Meetings" pill spans full width */
+  }
+  .calendar-legend-item { font-size: 0.72rem; }
+
   /* Container adjustments */
   .calendar-grid        { gap: 3px; }
   .calendar-weekdays    { gap: 3px; margin-bottom: 3px; }
@@ -1582,9 +1653,9 @@ body[data-page="login"] {
   .calendar-cell-date   { font-size: 0.78rem; }
   .calendar-cell-header { min-height: 20px; flex-direction: column; align-items: center; gap: 0; }
 
-  /* Today circle */
+  /* Today circle — keep legible on mobile */
   .calendar-cell-today .calendar-cell-date {
-    width: 22px; height: 22px; font-size: 0.72rem;
+    width: 26px; height: 26px; font-size: 0.78rem; font-weight: 800;
   }
 
   /* Hide text labels — too cramped */
